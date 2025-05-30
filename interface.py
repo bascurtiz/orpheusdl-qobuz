@@ -247,7 +247,15 @@ class ModuleInterface:
                 year = datetime.utcfromtimestamp(i['created_at']).strftime('%Y')
                 duration = i['duration']
             elif query_type is DownloadTypeEnum.track:
-                artists = [i['performer']['name']]
+                # Handle missing 'performer' key safely
+                if 'performer' in i and 'name' in i['performer']:
+                    artists = [i['performer']['name']]
+                elif 'album' in i and 'artist' in i['album'] and 'name' in i['album']['artist']:
+                    # Fallback to album artist if performer is not available
+                    artists = [i['album']['artist']['name']]
+                else:
+                    # Final fallback
+                    artists = ['Unknown Artist']
                 year = int(i['album']['release_date_original'].split('-')[0])
                 duration = i['duration']
             elif query_type is DownloadTypeEnum.album:
