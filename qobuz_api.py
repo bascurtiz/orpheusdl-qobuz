@@ -94,18 +94,38 @@ class Qobuz:
 
         return self._get('track/getFileUrl', params)
 
+    def get_sample_url(self, track_id: str):
+        """Get the sample/preview URL for a track (no authentication required)."""
+        try:
+            params = {
+                'track_id': track_id,
+                'format_id': '5',  # MP3 320 for samples
+                'intent': 'stream',
+                'sample': 'true',
+                'app_id': self.app_id
+            }
+
+            signature = self.create_signature('track/getFileUrl', params)
+            params['request_ts'] = signature[0]
+            params['request_sig'] = signature[1]
+
+            result = self._get('track/getFileUrl', params)
+            return result.get('url')
+        except Exception:
+            return None
+
     def get_track(self, track_id: str):
         return self._get('track/get',  params={
             'track_id': track_id,
             'app_id': self.app_id
         })
 
-    def get_playlist(self, playlist_id: str):
+    def get_playlist(self, playlist_id: str, limit: int = 500, offset: int = 0):
         return self._get('playlist/get',  params={
             'playlist_id': playlist_id,
             'app_id': self.app_id,
-            'limit': '2000',
-            'offset': '0',
+            'limit': str(limit),
+            'offset': str(offset),
             'extra': 'tracks,subscribers,focusAll'
         })
 

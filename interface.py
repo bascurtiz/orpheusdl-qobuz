@@ -180,13 +180,40 @@ class ModuleInterface:
         )
 
     def get_playlist_info(self, playlist_id):
+        # Fetch first batch to get total track count
         playlist_data = self.session.get_playlist(playlist_id)
-
+        
         tracks, extra_kwargs = [], {}
+        
+        # Process first batch of tracks
         for track in playlist_data['tracks']['items']:
             track_id = str(track['id'])
             extra_kwargs[track_id] = track
             tracks.append(track_id)
+        
+        # Check if there are more tracks to fetch (pagination)
+        total_tracks = playlist_data['tracks'].get('total', len(playlist_data['tracks']['items']))
+        fetched_tracks = len(playlist_data['tracks']['items'])
+        
+        # Fetch remaining tracks if playlist has more than initial batch
+        if fetched_tracks < total_tracks:
+            offset = fetched_tracks
+            limit = 500  # Qobuz API limit per request
+            
+            while offset < total_tracks:
+                # Fetch next batch
+                batch_data = self.session.get_playlist(playlist_id, limit=limit, offset=offset)
+                
+                if not batch_data['tracks']['items']:
+                    break  # No more tracks to fetch
+                
+                # Process batch tracks
+                for track in batch_data['tracks']['items']:
+                    track_id = str(track['id'])
+                    extra_kwargs[track_id] = track
+                    tracks.append(track_id)
+                
+                offset += len(batch_data['tracks']['items'])
 
         return PlaylistInfo(
             name = playlist_data['name'],
@@ -239,13 +266,24 @@ class ModuleInterface:
         items = []
         for i in results[query_type.name + 's']['items']:
             duration = None
+            image_url = None
+            preview_url = None
+            
             if query_type is DownloadTypeEnum.artist:
                 artists = None
                 year = None
+                # Artist image (use small for search thumbnails)
+                if i.get('image'):
+                    image_url = i['image'].get('small') or i['image'].get('medium') or i['image'].get('large')
             elif query_type is DownloadTypeEnum.playlist:
                 artists = [i['owner']['name']]
                 year = datetime.utcfromtimestamp(i['created_at']).strftime('%Y')
                 duration = i['duration']
+                # Playlist cover image
+                if i.get('images300'):
+                    image_url = i['images300'][0] if i['images300'] else None
+                elif i.get('image_rectangle'):
+                    image_url = i['image_rectangle'][0] if isinstance(i['image_rectangle'], list) else i['image_rectangle']
             elif query_type is DownloadTypeEnum.track:
                 # Handle missing 'performer' key safely
                 if 'performer' in i and 'name' in i['performer']:
@@ -258,10 +296,25 @@ class ModuleInterface:
                     artists = ['Unknown Artist']
                 year = int(i['album']['release_date_original'].split('-')[0])
                 duration = i['duration']
+                # Track cover image (from album) - use small for search thumbnails
+                if i.get('album') and i['album'].get('image'):
+                    image_url = i['album']['image'].get('small') or i['album']['image'].get('thumbnail') or i['album']['image'].get('large')
+                # Preview URL for track - check multiple possible field names
+                # Qobuz may provide preview URLs directly or we might need to fetch them
+                sample_field = i.get('sample')
+                preview_url = (
+                    i.get('sample_url') or 
+                    i.get('preview_url') or 
+                    i.get('previewable_url') or
+                    (sample_field.get('url') if isinstance(sample_field, dict) else sample_field)
+                )
             elif query_type is DownloadTypeEnum.album:
                 artists = [i['artist']['name']]
                 year = int(i['release_date_original'].split('-')[0])
                 duration = i['duration']
+                # Album cover image - use small for search thumbnails
+                if i.get('image'):
+                    image_url = i['image'].get('small') or i['image'].get('thumbnail') or i['image'].get('large')
             else:
                 raise Exception('Query type is invalid')
             name = i.get('name') or i.get('title')
@@ -274,6 +327,8 @@ class ModuleInterface:
                 explicit = bool(i.get('parental_warning')),
                 additional = [f'{i["maximum_sampling_rate"]}kHz/{i["maximum_bit_depth"]}bit'] if "maximum_sampling_rate" in i else None,
                 duration = duration,
+                image_url = image_url,
+                preview_url = preview_url,
                 extra_kwargs = {'data': {str(i['id']): i}} if query_type is DownloadTypeEnum.track else {}
             )
 
