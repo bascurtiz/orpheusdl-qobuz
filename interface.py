@@ -57,7 +57,7 @@ class ModuleInterface:
             # Check if error is about missing username
             error_str = str(e)
             if "'username'" in error_str or "username" in error_str.lower():
-                raise self.session.exception('Qobuz credentials are required. Please check your email and password in the settings.')
+                raise self.session.exception('Qobuz credentials are required. Please fill in your email and password in the settings.')
             raise
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
