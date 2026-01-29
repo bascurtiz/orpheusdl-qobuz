@@ -273,7 +273,7 @@ class ModuleInterface:
             username = self.module_controller.module_settings.get('username', '')
             password = self.module_controller.module_settings.get('password', '')
             if not username or not password:
-                raise self.session.exception('Qobuz credentials are required. Please check your email and password in the settings.')
+                raise self.session.exception('Qobuz credentials are required. Please fill in your email and password in the settings.')
             self.login(username, password)
 
         results = {}
