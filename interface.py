@@ -45,9 +45,20 @@ class ModuleInterface:
         self.quality_format = settings.get('quality_format')
 
     def login(self, email, password):
-        token = self.session.login(email, password)
-        self.session.auth_token = token
-        self.module_controller.temporary_settings_controller.set('token', token)
+        # Check if credentials are provided
+        if not email or not password:
+            raise self.session.exception('Qobuz credentials are required. Please check your email and password in the settings.')
+        
+        try:
+            token = self.session.login(email, password)
+            self.session.auth_token = token
+            self.module_controller.temporary_settings_controller.set('token', token)
+        except self.session.exception as e:
+            # Check if error is about missing username
+            error_str = str(e)
+            if "'username'" in error_str or "username" in error_str.lower():
+                raise self.session.exception('Qobuz credentials are required. Please check your email and password in the settings.')
+            raise
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
         track_data = data[track_id] if track_id in data else self.session.get_track(track_id)
