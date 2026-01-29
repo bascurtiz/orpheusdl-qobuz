@@ -47,7 +47,7 @@ class ModuleInterface:
     def login(self, email, password):
         # Check if credentials are provided
         if not email or not password:
-            raise self.session.exception('Qobuz credentials are required. Please check your email and password in the settings.')
+            raise self.session.exception('Qobuz credentials are required. Please fill in your email and password in the settings.')
         
         try:
             token = self.session.login(email, password)
