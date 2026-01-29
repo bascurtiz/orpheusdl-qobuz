@@ -268,6 +268,14 @@ class ModuleInterface:
         return [CreditsInfo(k, v) for k, v in credits_dict.items()]
 
     def search(self, query_type: DownloadTypeEnum, query, track_info: TrackInfo = None, limit: int = 10):
+        # Require valid session or credentials on every search so we show a clear message instead of allowing unauthenticated search (30s preview on download)
+        if not getattr(self.session, 'auth_token', None):
+            username = self.module_controller.module_settings.get('username', '')
+            password = self.module_controller.module_settings.get('password', '')
+            if not username or not password:
+                raise self.session.exception('Qobuz credentials are required. Please check your email and password in the settings.')
+            self.login(username, password)
+
         results = {}
         if track_info and track_info.tags.isrc:
             results = self.session.search(query_type.name, track_info.tags.isrc, limit)
