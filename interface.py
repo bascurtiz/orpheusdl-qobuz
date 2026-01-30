@@ -11,7 +11,7 @@ module_information = ModuleInformation(
     service_name = 'Qobuz',
     module_supported_modes = ModuleModes.download | ModuleModes.credits,
     global_settings = {'app_id': '798273057', 'app_secret': 'abb21364945c0583309667d13ca3d93a', 'quality_format': '{sample_rate}kHz {bit_depth}bit'},
-    session_settings = {'username': '', 'password': ''},
+    session_settings = {'username': '', 'password': '', 'user_id': '', 'auth_token': ''},
     session_storage_variables = ['token'],
     netlocation_constant = 'qobuz',
     url_constants={
@@ -29,7 +29,11 @@ class ModuleInterface:
     def __init__(self, module_controller: ModuleController):
         settings = module_controller.module_settings
         self.session = Qobuz(settings['app_id'], settings['app_secret'], module_controller.module_error) # TODO: get rid of this module_error thing
-        self.session.auth_token = module_controller.temporary_settings_controller.read('token')
+        # Use saved auth_token from settings (ID/Token mode) or from session storage (email/password login)
+        self.session.auth_token = (
+            module_controller.temporary_settings_controller.read('token')
+            or settings.get('auth_token')
+        )
         self.module_controller = module_controller
 
         # 5 = 320 kbps MP3, 6 = 16-bit FLAC, 7 = 24-bit / =< 96kHz FLAC, 27 =< 192 kHz FLAC
@@ -45,19 +49,31 @@ class ModuleInterface:
         self.quality_format = settings.get('quality_format')
 
     def login(self, email, password):
-        # Check if credentials are provided
+        settings = self.module_controller.module_settings
+        user_id = (settings.get('user_id') or '').strip()
+        auth_token = (settings.get('auth_token') or '').strip()
+        # ID/Token mode: use saved auth_token, no login call
+        if user_id and auth_token:
+            self.session.auth_token = auth_token
+            self.module_controller.temporary_settings_controller.set('token', auth_token)
+            return True
+        # Email/Password mode
         if not email or not password:
-            raise self.session.exception('Qobuz credentials are required. Please fill in your email and password in the settings.')
-        
+            raise self.session.exception(
+                'Qobuz credentials are required. Please fill in your email and password in the settings. '
+                'Alternatively, you can use ID and Token instead.'
+            )
         try:
             token = self.session.login(email, password)
             self.session.auth_token = token
             self.module_controller.temporary_settings_controller.set('token', token)
         except self.session.exception as e:
-            # Check if error is about missing username
             error_str = str(e)
             if "'username'" in error_str or "username" in error_str.lower():
-                raise self.session.exception('Qobuz credentials are required. Please fill in your email and password in the settings.')
+                raise self.session.exception(
+                    'Qobuz credentials are required. Please fill in your email and password in the settings. '
+                    'Alternatively, you can use ID and Token instead.'
+                )
             raise
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
@@ -269,11 +285,19 @@ class ModuleInterface:
 
     def search(self, query_type: DownloadTypeEnum, query, track_info: TrackInfo = None, limit: int = 10):
         # Require valid session or credentials on every search so we show a clear message instead of allowing unauthenticated search (30s preview on download)
+        settings = self.module_controller.module_settings
         if not getattr(self.session, 'auth_token', None):
-            username = self.module_controller.module_settings.get('username', '')
-            password = self.module_controller.module_settings.get('password', '')
-            if not username or not password:
-                raise self.session.exception('Qobuz credentials are required. Please fill in your email and password in the settings.')
+            username = (settings.get('username') or '').strip()
+            password = (settings.get('password') or '').strip()
+            user_id = (settings.get('user_id') or '').strip()
+            auth_token = (settings.get('auth_token') or '').strip()
+            has_email_pass = username and password
+            has_id_token = user_id and auth_token
+            if not has_email_pass and not has_id_token:
+                raise self.session.exception(
+                    'Qobuz credentials are required. Please fill in your email and password in the settings. '
+                    'Alternatively, you can use ID and Token instead.'
+                )
             self.login(username, password)
 
         results = {}
