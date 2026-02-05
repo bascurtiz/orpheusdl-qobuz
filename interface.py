@@ -140,6 +140,7 @@ class ModuleInterface:
         album_name += f' ({album_data.get("version")})' if album_data.get("version") else ''
 
         return TrackInfo(
+            id = str(track_id),
             name = track_name,
             album_id = album_data['id'],
             album = album_name,
@@ -254,12 +255,84 @@ class ModuleInterface:
         )
 
     def get_artist_info(self, artist_id, get_credited_albums):
+        """
+        Return artist info plus a list of album objects with metadata for GUI display.
+        The downloader still works because it only requires that each album item expose an ID
+        (either as a plain string, dict['id'], or object.id).
+        """
         artist_data = self.session.get_artist(artist_id)
-        albums = [str(album['id']) for album in artist_data['albums']['items']]
+        albums_raw = (artist_data.get('albums') or {}).get('items') or []
+        albums_out = []
+
+        for album in albums_raw:
+            # Fallback: if album isn't a dict, store stringified ID only
+            if not isinstance(album, dict):
+                albums_out.append(str(album))
+                continue
+
+            album_id = str(album.get('id') or '')
+
+            # Build human-readable album name (title + optional version)
+            name = album.get('name') or album.get('title') or 'Unknown Album'
+            if album.get('version'):
+                name += f" ({album.get('version')})"
+
+            # Prefer album artist name, otherwise fall back to main artist name
+            artist_name = None
+            if isinstance(album.get('artist'), dict):
+                artist_name = album['artist'].get('name')
+            if not artist_name:
+                artist_name = artist_data.get('name')
+
+            # Extract release year from known date fields
+            release_year = None
+            release_date = (
+                album.get('release_date_original')
+                or album.get('released_at')
+                or album.get('release_date')
+            )
+            if release_date:
+                try:
+                    release_year = int(str(release_date).split('-')[0])
+                except (ValueError, TypeError, AttributeError):
+                    release_year = None
+
+            # Album cover image - mirror search() album logic
+            cover_url = None
+            image = album.get('image')
+            if isinstance(image, dict):
+                cover_url = image.get('small') or image.get('thumbnail') or image.get('large')
+
+            # Duration in seconds (for GUI to format)
+            duration = album.get('duration')
+
+            # Quality / sampling info (matches album search "Additional" column)
+            additional = None
+            if 'maximum_sampling_rate' in album:
+                sr = album.get('maximum_sampling_rate')
+                bd = album.get('maximum_bit_depth')
+                if sr and bd:
+                    additional = f"{sr}kHz/{bd}bit"
+                elif sr:
+                    additional = f"{sr}kHz"
+
+            albums_out.append({
+                'id': album_id,
+                'name': name,
+                'artist': artist_name,
+                'release_year': release_year,
+                'cover_url': cover_url,
+                'duration': duration,
+                'additional': additional,
+            })
+
+        # Fallback: if we couldn't parse metadata, keep old behaviour (IDs only)
+        if not albums_out:
+            albums_out = [str(album['id']) for album in artist_data.get('albums', {}).get('items', [])]
 
         return ArtistInfo(
             name = artist_data['name'],
-            albums = albums
+            albums = albums_out
         )
 
     def get_track_credits(self, track_id, data=None):
