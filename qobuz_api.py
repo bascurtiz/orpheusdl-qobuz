@@ -144,3 +144,13 @@ class Qobuz:
             'limit': '1000',
             'offset': '0'
         })
+
+    def get_label(self, label_id: str, limit: int = 500, offset: int = 0):
+        """Fetch label metadata and albums. Uses label/get (same pattern as artist/get)."""
+        return self._get('label/get', params={
+            'label_id': label_id,
+            'app_id': self.app_id,
+            'extra': 'albums,focusAll',
+            'limit': str(limit),
+            'offset': str(offset),
+        })
