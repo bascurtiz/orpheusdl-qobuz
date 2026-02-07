@@ -49,6 +49,33 @@ class ModuleInterface:
         self.quality_tier = module_controller.orpheus_options.quality_tier
         self.quality_format = settings.get('quality_format')
 
+    def _ensure_credentials(self):
+        """Require valid user credentials before download/metadata that leads to download.
+        Without this, only previews would be downloaded. Matches Spotify behavior: show
+        what's missing and where to fill it in."""
+        if getattr(self.session, 'auth_token', None):
+            return
+        settings = self.module_controller.module_settings
+        username = (settings.get('username') or '').strip()
+        password = (settings.get('password') or '').strip()
+        user_id = (settings.get('user_id') or '').strip()
+        auth_token = (settings.get('auth_token') or '').strip()
+        has_email_pass = username and password
+        has_id_token = user_id and auth_token
+        if has_id_token:
+            self.session.auth_token = auth_token
+            self.module_controller.temporary_settings_controller.set('token', auth_token)
+            return
+        if has_email_pass:
+            self.login(username, password)
+            return
+        error_msg = (
+            "Qobuz credentials are missing in settings.json. "
+            "Please fill in either username and password, or user_id and auth token. "
+            "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
+        )
+        raise self.session.exception(error_msg)
+
     def login(self, email, password):
         settings = self.module_controller.module_settings
         user_id = (settings.get('user_id') or '').strip()
@@ -78,6 +105,7 @@ class ModuleInterface:
             raise
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
+        self._ensure_credentials()
         track_data = data[track_id] if track_id in data else self.session.get_track(track_id)
         album_data = track_data['album']
 
@@ -165,6 +193,7 @@ class ModuleInterface:
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
     def get_album_info(self, album_id):
+        self._ensure_credentials()
         album_data = self.session.get_album(album_id)
         booklet_url = album_data['goodies'][0]['url'] if 'goodies' in album_data and len(album_data['goodies']) != 0 else None
 
@@ -209,6 +238,7 @@ class ModuleInterface:
         )
 
     def get_playlist_info(self, playlist_id):
+        self._ensure_credentials()
         # Fetch first batch to get total track count
         playlist_data = self.session.get_playlist(playlist_id)
         
@@ -261,6 +291,7 @@ class ModuleInterface:
         The downloader still works because it only requires that each album item expose an ID
         (either as a plain string, dict['id'], or object.id).
         """
+        self._ensure_credentials()
         artist_data = self.session.get_artist(artist_id)
         albums_raw = (artist_data.get('albums') or {}).get('items') or []
         albums_out = []
@@ -338,6 +369,7 @@ class ModuleInterface:
 
     def get_label_info(self, label_id: str, get_credited_albums: bool = True, **kwargs) -> ArtistInfo:
         """Return label metadata and albums as ArtistInfo (same shape as artist for download flow)."""
+        self._ensure_credentials()
         label_data = self.session.get_label(label_id)
         label_name = label_data.get('name') or 'Unknown Label'
         albums_raw = (label_data.get('albums') or {}).get('items') or []
