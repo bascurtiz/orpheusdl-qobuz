@@ -71,7 +71,7 @@ class ModuleInterface:
             return
         error_msg = (
             "Qobuz credentials are missing in settings.json. "
-            "Please fill in either username and password, or user_id and auth token. "
+            "Please fill in either email and password, or user_id and auth token. "
             "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
         )
         raise self.session.exception(error_msg)
@@ -89,7 +89,7 @@ class ModuleInterface:
         if not email or not password:
             raise self.session.exception(
                 "Qobuz credentials are missing in settings.json. "
-                "Please fill in either username and password, or user_id and auth token. "
+                "Please fill in either email and password, or user_id and auth token. "
                 "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
             )
         try:
@@ -101,103 +101,153 @@ class ModuleInterface:
             if "'username'" in error_str or "username" in error_str.lower():
                 raise self.session.exception(
                     "Qobuz credentials are missing in settings.json. "
-                    "Please fill in either username and password, or user_id and auth token. "
+                    "Please fill in either email and password, or user_id and auth token. "
                     "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
                 )
             raise
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
-        self._ensure_credentials()
-        track_data = data[track_id] if track_id in data else self.session.get_track(track_id)
-        album_data = track_data['album']
+        track_data = data.get(track_id) if data else None
+        if not track_data:
+            track_data = self.session.get_track(track_id)
+        album_data = track_data.get('album') or track_data
+        if isinstance(album_data, dict) and 'artist' not in album_data and track_data.get('album'):
+            album_data = track_data['album']
 
-        quality_tier = self.quality_parse[quality_tier]
-
-        main_artist = track_data.get('performer', album_data['artist'])
+        main_artist = track_data.get('performer') or (album_data.get('artist') if isinstance(album_data, dict) else None)
+        if not main_artist:
+            main_artist = {'name': 'Unknown Artist', 'id': ''}
         artists = [
             unicodedata.normalize('NFKD', main_artist['name'])
             .encode('ascii', 'ignore')
             .decode('utf-8')
         ]
-
-        # Filter MainArtist and FeaturedArtist from performers
         if track_data.get('performers'):
             performers = []
             for credit in track_data['performers'].split(' - '):
                 contributor_role = credit.split(', ')[1:]
                 contributor_name = credit.split(', ')[0]
-
                 for contributor in ['MainArtist', 'FeaturedArtist', 'Artist']:
                     if contributor in contributor_role:
                         if contributor_name not in artists:
                             artists.append(contributor_name)
                         contributor_role.remove(contributor)
-
                 if not contributor_role:
                     continue
                 performers.append(f"{contributor_name}, {', '.join(contributor_role)}")
+            track_data = dict(track_data)
             track_data['performers'] = ' - '.join(performers)
         artists[0] = main_artist['name']
 
         tags = Tags(
-            album_artist = album_data['artist']['name'],
-            composer = track_data['composer']['name'] if 'composer' in track_data else None,
+            album_artist = album_data.get('artist', {}).get('name', '') if isinstance(album_data.get('artist'), dict) else '',
+            composer = track_data.get('composer', {}).get('name') if isinstance(track_data.get('composer'), dict) else None,
             release_date = album_data.get('release_date_original'),
-            track_number = track_data['track_number'],
-            total_tracks = album_data['tracks_count'],
-            disc_number = track_data['media_number'],
-            total_discs = album_data['media_count'],
+            track_number = track_data.get('track_number'),
+            total_tracks = album_data.get('tracks_count'),
+            disc_number = track_data.get('media_number'),
+            total_discs = album_data.get('media_count'),
             isrc = track_data.get('isrc'),
             upc = album_data.get('upc'),
-            label = album_data.get('label').get('name') if album_data.get('label') else None,
+            label = album_data.get('label', {}).get('name') if isinstance(album_data.get('label'), dict) else None,
             copyright = album_data.get('copyright'),
-            genres = [album_data['genre']['name']],
+            genres = [album_data.get('genre', {}).get('name')] if isinstance(album_data.get('genre'), dict) else [],
         )
 
+        # track and album title fix to include version tag
+        track_name = f"{track_data.get('work')} - " if track_data.get('work') else ""
+        track_name += (track_data.get('title') or '').rstrip()
+        track_name += f' ({track_data.get("version")})' if track_data.get("version") else ''
+        album_name = (album_data.get('title') or '').rstrip()
+        album_name += f' ({album_data.get("version")})' if album_data.get("version") else ''
+
+        cover_url = ''
+        if isinstance(album_data.get('image'), dict):
+            cover_url = (album_data['image'].get('large') or '').split('_')[0] + '_org.jpg' if album_data['image'].get('large') else ''
+
+        # When not authenticated: return display-only TrackInfo (no download URL); expand works, download will raise in get_track_download
+        if not getattr(self.session, 'auth_token', None):
+            preview_url = None
+            try:
+                preview_url = self.session.get_sample_url(str(track_id))
+            except Exception:
+                pass
+            return TrackInfo(
+                id=str(track_id),
+                name=track_name,
+                album_id=album_data.get('id', ''),
+                album=album_name,
+                artists=artists,
+                artist_id=main_artist.get('id', ''),
+                bit_depth=None,
+                bitrate=320,
+                sample_rate=None,
+                release_year=int(album_data.get('release_date_original', '1970')[:4]) if album_data.get('release_date_original') else 0,
+                explicit=bool(track_data.get('parental_warning')),
+                cover_url=cover_url,
+                tags=tags,
+                codec=CodecEnum.MP3,
+                duration=track_data.get('duration'),
+                credits_extra_kwargs={'data': {track_id: track_data}},
+                download_extra_kwargs={},
+                error='Login required for download. Please log in in Settings (Qobuz tab).',
+                preview_url=preview_url,
+            )
+
+        quality_tier = self.quality_parse[quality_tier]
         stream_data = self.session.get_file_url(track_id, quality_tier)
-        # uncompressed PCM bitrate calculation, not quite accurate for FLACs due to the up to 60% size improvement
         bitrate = 320
         if stream_data.get('format_id') in {6, 7, 27}:
             bitrate = int((stream_data['sampling_rate'] * 1000 * stream_data['bit_depth'] * 2) // 1000)
         elif not stream_data.get('format_id'):
             bitrate = stream_data.get('format_id')
 
-        # track and album title fix to include version tag
-        track_name = f"{track_data.get('work')} - " if track_data.get('work') else ""
-        track_name += track_data.get('title').rstrip()
-        track_name += f' ({track_data.get("version")})' if track_data.get("version") else ''
-
-        album_name = album_data.get('title').rstrip()
-        album_name += f' ({album_data.get("version")})' if album_data.get("version") else ''
-
         return TrackInfo(
-            id = str(track_id),
-            name = track_name,
-            album_id = album_data['id'],
-            album = album_name,
-            artists = artists,
-            artist_id = main_artist['id'],
-            bit_depth = stream_data['bit_depth'],
-            bitrate = bitrate,
-            sample_rate = stream_data['sampling_rate'],
-            release_year = int(album_data['release_date_original'].split('-')[0]),
-            explicit = track_data['parental_warning'],
-            cover_url = album_data['image']['large'].split('_')[0] + '_org.jpg',
-            tags = tags,
-            codec = CodecEnum.FLAC if stream_data.get('format_id') in {6, 7, 27} else CodecEnum.NONE if not stream_data.get('format_id') else CodecEnum.MP3,
-            duration = track_data.get('duration'),
-            credits_extra_kwargs = {'data': {track_id: track_data}},
-            download_extra_kwargs = {'url': stream_data.get('url')},
-            error=f'Track "{track_data["title"]}" is not streamable!' if not track_data['streamable'] else None
+            id=str(track_id),
+            name=track_name,
+            album_id=album_data['id'],
+            album=album_name,
+            artists=artists,
+            artist_id=main_artist['id'],
+            bit_depth=stream_data['bit_depth'],
+            bitrate=bitrate,
+            sample_rate=stream_data['sampling_rate'],
+            release_year=int(album_data['release_date_original'].split('-')[0]),
+            explicit=track_data['parental_warning'],
+            cover_url=cover_url or (album_data['image']['large'].split('_')[0] + '_org.jpg'),
+            tags=tags,
+            codec=CodecEnum.FLAC if stream_data.get('format_id') in {6, 7, 27} else CodecEnum.NONE if not stream_data.get('format_id') else CodecEnum.MP3,
+            duration=track_data.get('duration'),
+            credits_extra_kwargs={'data': {track_id: track_data}},
+            download_extra_kwargs={'url': stream_data.get('url')},
+            error=f'Track "{track_data["title"]}" is not streamable!' if not track_data.get('streamable') else None
         )
 
-    def get_track_download(self, url):
+    def get_track_download(self, url_or_track_id, quality_tier=None, codec_options=None, **kwargs):
+        # Called either as get_track_download(url) from download_extra_kwargs or get_track_download(track_id, quality_tier, codec_options) from core fallback
+        if isinstance(url_or_track_id, str) and url_or_track_id.startswith('http'):
+            url = url_or_track_id
+        else:
+            self._ensure_credentials()
+            track_id = url_or_track_id
+            quality_id = self.quality_parse.get(quality_tier, 5) if quality_tier is not None else 5
+            stream_data = self.session.get_file_url(str(track_id), quality_id)
+            url = stream_data.get('url')
+        if not url:
+            raise self.session.exception(
+                "Qobuz credentials are required for download. "
+                "Please log in in Settings (Qobuz tab) with your email and password, or user_id and auth token."
+            )
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
     def get_album_info(self, album_id):
-        self._ensure_credentials()
         album_data = self.session.get_album(album_id)
-        booklet_url = album_data['goodies'][0]['url'] if 'goodies' in album_data and len(album_data['goodies']) != 0 else None
+        booklet_url = None
+        if album_data.get('goodies'):
+            try:
+                booklet_url = album_data['goodies'][0].get('url')
+            except (IndexError, KeyError, TypeError):
+                pass
 
         tracks, extra_kwargs = [], {}
         for track in album_data.pop('tracks')['items']:
@@ -240,7 +290,6 @@ class ModuleInterface:
         )
 
     def get_playlist_info(self, playlist_id):
-        self._ensure_credentials()
         # Fetch first batch to get total track count
         playlist_data = self.session.get_playlist(playlist_id)
         
@@ -293,7 +342,6 @@ class ModuleInterface:
         The downloader still works because it only requires that each album item expose an ID
         (either as a plain string, dict['id'], or object.id).
         """
-        self._ensure_credentials()
         artist_data = self.session.get_artist(artist_id)
         albums_raw = (artist_data.get('albums') or {}).get('items') or []
         albums_out = []
@@ -371,7 +419,6 @@ class ModuleInterface:
 
     def get_label_info(self, label_id: str, get_credited_albums: bool = True, **kwargs) -> ArtistInfo:
         """Return label metadata and albums as ArtistInfo (same shape as artist for download flow)."""
-        self._ensure_credentials()
         label_data = self.session.get_label(label_id)
         label_name = label_data.get('name') or 'Unknown Label'
         albums_raw = (label_data.get('albums') or {}).get('items') or []
@@ -450,23 +497,7 @@ class ModuleInterface:
         return [CreditsInfo(k, v) for k, v in credits_dict.items()]
 
     def search(self, query_type: DownloadTypeEnum, query, track_info: TrackInfo = None, limit: int = 10):
-        # Require valid session or credentials on every search so we show a clear message instead of allowing unauthenticated search (30s preview on download)
-        settings = self.module_controller.module_settings
-        if not getattr(self.session, 'auth_token', None):
-            username = (settings.get('username') or '').strip()
-            password = (settings.get('password') or '').strip()
-            user_id = (settings.get('user_id') or '').strip()
-            auth_token = (settings.get('auth_token') or '').strip()
-            has_email_pass = username and password
-            has_id_token = user_id and auth_token
-            if not has_email_pass and not has_id_token:
-                raise self.session.exception(
-                    "Qobuz credentials are missing in settings.json. "
-                    "Please fill in either username and password, or user_id and auth token. "
-                    "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
-                )
-            self.login(username, password)
-
+        # Catalog search works with app_id only (no user login). Login required only for download.
         results = {}
         if track_info and track_info.tags.isrc:
             results = self.session.search(query_type.name, track_info.tags.isrc, limit)

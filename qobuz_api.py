@@ -13,16 +13,18 @@ class Qobuz:
         self.s = create_requests_session()
 
     def headers(self):
-        return {
+        h = {
             'X-Device-Platform': 'android',
             'X-Device-Model': 'Pixel 3',
             'X-Device-Os-Version': '10',
-            'X-User-Auth-Token': self.auth_token if self.auth_token else None,
             'X-Device-Manufacturer-Id': 'ffffffff-5783-1f51-ffff-ffffef05ac4a',
             'X-App-Version': '5.16.1.5',
             'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 10; Pixel 3 Build/QP1A.190711.020))'
                           'QobuzMobileAndroid/5.16.1.5-b21041415'
         }
+        if self.auth_token:
+            h['X-User-Auth-Token'] = self.auth_token
+        return h
 
     def _get(self, url: str, params=None):
         if not params:
@@ -54,7 +56,7 @@ class Qobuz:
         elif not r['user']['credential']['parameters']:
             raise self.exception("Free accounts are not eligible for downloading")
         else:
-            raise self.exception('Invalid username/password')
+            raise self.exception('Invalid email or password')
 
         return r['user_auth_token']
 
