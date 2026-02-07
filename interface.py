@@ -88,8 +88,9 @@ class ModuleInterface:
         # Email/Password mode
         if not email or not password:
             raise self.session.exception(
-                'Qobuz credentials are required. Please fill in your email and password in the settings. '
-                'Alternatively, you can use ID and Token instead.'
+                "Qobuz credentials are missing in settings.json. "
+                "Please fill in either username and password, or user_id and auth token. "
+                "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
             )
         try:
             token = self.session.login(email, password)
@@ -99,8 +100,9 @@ class ModuleInterface:
             error_str = str(e)
             if "'username'" in error_str or "username" in error_str.lower():
                 raise self.session.exception(
-                    'Qobuz credentials are required. Please fill in your email and password in the settings. '
-                    'Alternatively, you can use ID and Token instead.'
+                    "Qobuz credentials are missing in settings.json. "
+                    "Please fill in either username and password, or user_id and auth token. "
+                    "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
                 )
             raise
 
@@ -459,8 +461,9 @@ class ModuleInterface:
             has_id_token = user_id and auth_token
             if not has_email_pass and not has_id_token:
                 raise self.session.exception(
-                    'Qobuz credentials are required. Please fill in your email and password in the settings. '
-                    'Alternatively, you can use ID and Token instead.'
+                    "Qobuz credentials are missing in settings.json. "
+                    "Please fill in either username and password, or user_id and auth token. "
+                    "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
                 )
             self.login(username, password)
 
