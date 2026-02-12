@@ -71,7 +71,7 @@ class ModuleInterface:
             return
         error_msg = (
             "Qobuz credentials are missing in settings.json. "
-            "Please fill in either email and password, or user_id and auth token. "
+            "Please fill in either email and password, or id/token. "
             "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
         )
         raise self.session.exception(error_msg)
@@ -89,7 +89,7 @@ class ModuleInterface:
         if not email or not password:
             raise self.session.exception(
                 "Qobuz credentials are missing in settings.json. "
-                "Please fill in either email and password, or user_id and auth token. "
+                "Please fill in either email and password, or id/token. "
                 "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
             )
         try:
@@ -101,7 +101,7 @@ class ModuleInterface:
             if "'username'" in error_str or "username" in error_str.lower():
                 raise self.session.exception(
                     "Qobuz credentials are missing in settings.json. "
-                    "Please fill in either email and password, or user_id and auth token. "
+                    "Please fill in either email and password, or id/token. "
                     "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
                 )
             raise
@@ -190,7 +190,7 @@ class ModuleInterface:
                 duration=track_data.get('duration'),
                 credits_extra_kwargs={'data': {track_id: track_data}},
                 download_extra_kwargs={},
-                error='Login required for download. Please log in in Settings (Qobuz tab).',
+                error='Qobuz credentials are missing in settings.json. Please fill in either email and password, or id/token. Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly.',
                 preview_url=preview_url,
             )
 
@@ -236,7 +236,7 @@ class ModuleInterface:
         if not url:
             raise self.session.exception(
                 "Qobuz credentials are required for download. "
-                "Please log in in Settings (Qobuz tab) with your email and password, or user_id and auth token."
+                "Please log in in Settings (Qobuz tab) with your email and password, or id/token."
             )
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
