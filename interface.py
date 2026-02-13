@@ -29,13 +29,42 @@ module_information = ModuleInformation(
 class ModuleInterface:
     def __init__(self, module_controller: ModuleController):
         settings = module_controller.module_settings
-        self.session = Qobuz(settings['app_id'], settings['app_secret'], module_controller.module_error) # TODO: get rid of this module_error thing
+        self.session = Qobuz(settings['app_id'], settings['app_secret'], module_controller.module_error)
+        
         # Use saved auth_token from settings (ID/Token mode) or from session storage (email/password login)
         self.session.auth_token = (
             module_controller.temporary_settings_controller.read('token')
             or settings.get('auth_token')
         )
         self.module_controller = module_controller
+
+        # Validate token and refresh if necessary
+        if self.session.auth_token:
+            if not self.session.validate_token():
+                # Token invalid, try to re-login if we have credentials
+                username = settings.get('username')
+                password = settings.get('password')
+                user_id = settings.get('user_id')
+                auth_token = settings.get('auth_token')
+
+                # If user provided ID/Token explicitly in settings, we likely can't refresh it without manual update.
+                # But if they provided email/password, we can re-login.
+                if username and password:
+                    try:
+                        self.login(username, password)
+                    except:
+                        # Login failed, clear invalid token so we don't keep using it
+                        self.session.auth_token = None
+                        self.module_controller.temporary_settings_controller.set('token', '')
+                elif user_id and auth_token:
+                     # Revert to settings token if session storage one failed (though they might be the same)
+                     self.session.auth_token = auth_token
+                     if not self.session.validate_token():
+                         self.session.auth_token = None
+                else:
+                    self.session.auth_token = None
+                    self.module_controller.temporary_settings_controller.set('token', '')
+
 
         # 5 = 320 kbps MP3, 6 = 16-bit FLAC, 7 = 24-bit / =< 96kHz FLAC, 27 =< 192 kHz FLAC
         self.quality_parse = {
@@ -67,7 +96,10 @@ class ModuleInterface:
             self.module_controller.temporary_settings_controller.set('token', auth_token)
             return
         if has_email_pass:
-            self.login(username, password)
+            try:
+                self.login(username, password)
+            except Exception as e:
+                raise self.session.exception(f"Qobuz login failed: {e}")
             return
         error_msg = (
             "Qobuz credentials are missing in settings.json. "
@@ -92,21 +124,12 @@ class ModuleInterface:
                 "Please fill in either email and password, or id/token. "
                 "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
             )
-        try:
-            token = self.session.login(email, password)
-            self.session.auth_token = token
-            self.module_controller.temporary_settings_controller.set('token', token)
-        except self.session.exception as e:
-            error_str = str(e)
-            if "'username'" in error_str or "username" in error_str.lower():
-                raise self.session.exception(
-                    "Qobuz credentials are missing in settings.json. "
-                    "Please fill in either email and password, or id/token. "
-                    "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
-                )
-            raise
+        token = self.session.login(email, password)
+        self.session.auth_token = token
+        self.module_controller.temporary_settings_controller.set('token', token)
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
+        self._ensure_credentials()
         track_data = data.get(track_id) if data else None
         if not track_data:
             track_data = self.session.get_track(track_id)

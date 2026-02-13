@@ -12,6 +12,20 @@ class Qobuz:
         self.exception = exception
         self.s = create_requests_session()
 
+    def validate_token(self):
+        """Check if current auth_token is valid by making a lightweight authenticated call."""
+        if not self.auth_token:
+            return False
+        try:
+            # Try to fetch stream URL for a track to validate token
+            # Track ID 52151405 is used as test_url in interface.py
+            self.get_file_url('52151405', 5)
+            return True
+        except Exception:
+            # If any error occurs (invalid token, network, etc.), consider it invalid to force re-login
+            return False
+        return True
+
     def headers(self):
         h = {
             'X-Device-Platform': 'android',
@@ -25,6 +39,8 @@ class Qobuz:
         if self.auth_token:
             h['X-User-Auth-Token'] = self.auth_token
         return h
+
+
 
     def _get(self, url: str, params=None):
         if not params:
