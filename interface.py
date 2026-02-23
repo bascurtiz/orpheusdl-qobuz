@@ -10,7 +10,7 @@ from .qobuz_api import Qobuz
 module_information = ModuleInformation(
     service_name = 'Qobuz',
     module_supported_modes = ModuleModes.download | ModuleModes.credits,
-    global_settings = {'app_id': '798273057', 'app_secret': 'abb21364945c0583309667d13ca3d93a', 'quality_format': '{sample_rate}kHz {bit_depth}bit'},
+    global_settings = {'app_id': '798273057', 'app_secret': 'abb21364945c0583309667d13ca3d93a', 'quality_format': '{sample_rate}kHz/{bit_depth}bit'},
     session_settings = {'username': '', 'password': '', 'user_id': '', 'auth_token': '', 'use_id_token': 'false'},
     session_storage_variables = ['token'],
     netlocation_constant = 'qobuz',
@@ -556,9 +556,18 @@ class ModuleInterface:
                     artists = [i['owner']['name']]
                     year = datetime.utcfromtimestamp(i['created_at']).strftime('%Y')
                     duration = i['duration']
-                    # Playlist track count in additional
+                    # Playlist track count + quality tag in additional
                     playlist_track_count = i.get('tracks_count') or (i.get('tracks') or {}).get('total')
-                    additional = [f"1 track" if playlist_track_count == 1 else f"{playlist_track_count} tracks"] if playlist_track_count is not None else None
+                    track_label = f"1 track" if playlist_track_count == 1 else f"{playlist_track_count} tracks"
+                    # Check for Hi-Res tag (slug='hi-res', featured_tag_id='51')
+                    tags_list = i.get('tags') or []
+                    is_hires = any(t.get('slug') == 'hi-res' for t in tags_list)
+                    if is_hires and playlist_track_count is not None:
+                        additional = [f"{track_label}, \U0001f177 HI-RES"]
+                    elif playlist_track_count is not None:
+                        additional = [track_label]
+                    else:
+                        additional = None
                     # Playlist cover image
                     if i.get('images300'):
                         image_url = i['images300'][0] if i['images300'] else None
@@ -599,9 +608,13 @@ class ModuleInterface:
                     continue
                 name = i.get('name') or i.get('title')
                 name += f" ({i.get('version')})" if i.get('version') else ''
-                # additional: for playlist use track count (set in branch); for others use sampling rate when present
+                # additional: for playlist use track count + quality (set in branch); for others use sampling rate when present
+                # Only show quality when it's genuinely hi-res (above 44.1kHz/16bit CD baseline)
+                _sr = i.get("maximum_sampling_rate")
+                _bd = i.get("maximum_bit_depth")
+                _is_hires_quality = _sr is not None and (_sr > 44.1 or (_bd is not None and _bd > 16))
                 additional_for_sr = (additional if (query_type is DownloadTypeEnum.playlist and additional is not None) else
-                    ([f'{i["maximum_sampling_rate"]}kHz/{i["maximum_bit_depth"]}bit'] if "maximum_sampling_rate" in i else None))
+                    ([f'{_sr}kHz/{_bd}bit'] if _is_hires_quality else None))
                 item = SearchResult(
                     name=name,
                     artists=artists,
