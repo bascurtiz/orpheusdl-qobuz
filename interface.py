@@ -412,14 +412,17 @@ class ModuleInterface:
             duration = album.get('duration')
 
             # Quality / sampling info (matches album search "Additional" column)
+            # Only show quality when it's genuinely hi-res (above 44.1kHz/24-bit CD/Enhanced baseline)
             additional = None
             if 'maximum_sampling_rate' in album:
                 sr = album.get('maximum_sampling_rate')
                 bd = album.get('maximum_bit_depth')
                 if sr and bd:
-                    additional = f"{sr}kHz/{bd}bit"
+                    if sr > 44.1 or bd > 24:
+                        additional = f"{sr}kHz/{bd}bit"
                 elif sr:
-                    additional = f"{sr}kHz"
+                    if sr > 44.1:
+                        additional = f"{sr}kHz"
 
             albums_out.append({
                 'id': album_id,
@@ -471,14 +474,19 @@ class ModuleInterface:
             if isinstance(image, dict):
                 cover_url = image.get('small') or image.get('thumbnail') or image.get('large')
             duration = album.get('duration')
+            # Quality / sampling info (matches album search "Additional" column)
+            # Only show quality when it's genuinely hi-res (above 44.1kHz/24-bit CD/Enhanced baseline)
             additional = None
             if 'maximum_sampling_rate' in album:
                 sr = album.get('maximum_sampling_rate')
                 bd = album.get('maximum_bit_depth')
                 if sr and bd:
-                    additional = f"{sr}kHz/{bd}bit"
+                    if sr > 44.1 or bd > 24:
+                        additional = f"{sr}kHz/{bd}bit"
                 elif sr:
-                    additional = f"{sr}kHz"
+                    if sr > 44.1:
+                        additional = f"{sr}kHz"
+
             albums_out.append({
                 'id': album_id,
                 'name': name,
@@ -563,7 +571,7 @@ class ModuleInterface:
                     tags_list = i.get('tags') or []
                     is_hires = any(t.get('slug') == 'hi-res' for t in tags_list)
                     if is_hires and playlist_track_count is not None:
-                        additional = [f"{track_label}, \U0001f177 HI-RES"]
+                        additional = [f"{track_label} · 🅷 HI-RES"]
                     elif playlist_track_count is not None:
                         additional = [track_label]
                     else:
@@ -609,10 +617,10 @@ class ModuleInterface:
                 name = i.get('name') or i.get('title')
                 name += f" ({i.get('version')})" if i.get('version') else ''
                 # additional: for playlist use track count + quality (set in branch); for others use sampling rate when present
-                # Only show quality when it's genuinely hi-res (above 44.1kHz/16bit CD baseline)
+                # Only show quality when it's genuinely hi-res (above 44.1kHz/24-bit CD/Enhanced baseline)
                 _sr = i.get("maximum_sampling_rate")
                 _bd = i.get("maximum_bit_depth")
-                _is_hires_quality = _sr is not None and (_sr > 44.1 or (_bd is not None and _bd > 16))
+                _is_hires_quality = _sr is not None and (_sr > 44.1 or (_bd is not None and _bd > 24))
                 additional_for_sr = (additional if (query_type is DownloadTypeEnum.playlist and additional is not None) else
                     ([f'{_sr}kHz/{_bd}bit'] if _is_hires_quality else None))
                 item = SearchResult(
