@@ -73,7 +73,8 @@ class ModuleInterface:
             QualityEnum.MEDIUM: 5,
             QualityEnum.HIGH: 5,
             QualityEnum.LOSSLESS: 6,
-            QualityEnum.HIFI: 27
+            QualityEnum.HIFI: 27,
+            QualityEnum.ATMOS: 27
         }
         self.quality_tier = module_controller.orpheus_options.quality_tier
         self.quality_format = settings.get('quality_format')
