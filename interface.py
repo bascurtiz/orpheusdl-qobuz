@@ -130,7 +130,10 @@ class ModuleInterface:
         self.module_controller.temporary_settings_controller.set('token', token)
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
-        self._ensure_credentials()
+        try:
+            self._ensure_credentials()
+        except Exception:
+            pass
         track_data = data.get(track_id) if data else None
         if not track_data:
             track_data = self.session.get_track(track_id)
