@@ -2,6 +2,7 @@ import unicodedata
 import re
 from datetime import datetime
 from urllib.parse import urlparse
+import concurrent.futures
 
 from utils.models import *
 from .qobuz_api import Qobuz
@@ -371,6 +372,27 @@ class ModuleInterface:
         """
         artist_data = self.session.get_artist(artist_id)
         albums_raw = (artist_data.get('albums') or {}).get('items') or []
+        
+        # Batch fetch missing album metadata (tracks_count and duration)
+        missing_metadata = [idx for idx, a in enumerate(albums_raw) if isinstance(a, dict) and (not a.get('tracks_count') or not a.get('duration'))]
+        if missing_metadata:
+            a_meta = {}
+            def _fetch_qobuz_album_meta(aid):
+                try:
+                    return aid, self.session.get_album(aid)
+                except: pass
+                return aid, None
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                fetch_ids = [albums_raw[idx]['id'] for idx in missing_metadata]
+                for aid, full_data in executor.map(_fetch_qobuz_album_meta, fetch_ids):
+                    if full_data: a_meta[str(aid)] = full_data
+            
+            for idx in missing_metadata:
+                aid = str(albums_raw[idx]['id'])
+                if aid in a_meta:
+                    albums_raw[idx].update(a_meta[aid])
+
         albums_out = []
 
         for album in albums_raw:
@@ -417,16 +439,24 @@ class ModuleInterface:
 
             # Quality / sampling info (matches album search "Additional" column)
             # Only show quality when it's genuinely hi-res (above 44.1kHz/24-bit CD/Enhanced baseline)
-            additional = None
+            additional_parts = []
+            
+            # Add track count
+            tc = album.get('tracks_count')
+            if tc:
+                additional_parts.append(f"1 track" if tc == 1 else f"{tc} tracks")
+
             if 'maximum_sampling_rate' in album:
                 sr = album.get('maximum_sampling_rate')
                 bd = album.get('maximum_bit_depth')
                 if sr and bd:
                     if sr > 44.1 or bd > 24:
-                        additional = f"{sr}kHz/{bd}bit"
+                        additional_parts.append(f"{sr}kHz/{bd}bit")
                 elif sr:
                     if sr > 44.1:
-                        additional = f"{sr}kHz"
+                        additional_parts.append(f"{sr}kHz")
+            
+            additional = additional_parts if additional_parts else None
 
             albums_out.append({
                 'id': album_id,
@@ -436,6 +466,7 @@ class ModuleInterface:
                 'cover_url': cover_url,
                 'duration': duration,
                 'additional': additional,
+                'explicit': bool(album.get('parental_warning')),
             })
 
         # Fallback: if we couldn't parse metadata, keep old behaviour (IDs only)
@@ -452,6 +483,27 @@ class ModuleInterface:
         label_data = self.session.get_label(label_id)
         label_name = label_data.get('name') or 'Unknown Label'
         albums_raw = (label_data.get('albums') or {}).get('items') or []
+        
+        # Batch fetch missing album metadata (tracks_count and duration)
+        missing_metadata = [idx for idx, a in enumerate(albums_raw) if isinstance(a, dict) and (not a.get('tracks_count') or not a.get('duration'))]
+        if missing_metadata:
+            a_meta = {}
+            def _fetch_qobuz_album_meta(aid):
+                try:
+                    return aid, self.session.get_album(aid)
+                except: pass
+                return aid, None
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                fetch_ids = [albums_raw[idx]['id'] for idx in missing_metadata]
+                for aid, full_data in executor.map(_fetch_qobuz_album_meta, fetch_ids):
+                    if full_data: a_meta[str(aid)] = full_data
+            
+            for idx in missing_metadata:
+                aid = str(albums_raw[idx]['id'])
+                if aid in a_meta:
+                    albums_raw[idx].update(a_meta[aid])
+
         albums_out = []
 
         for album in albums_raw:
@@ -480,16 +532,24 @@ class ModuleInterface:
             duration = album.get('duration')
             # Quality / sampling info (matches album search "Additional" column)
             # Only show quality when it's genuinely hi-res (above 44.1kHz/24-bit CD/Enhanced baseline)
-            additional = None
+            additional_parts = []
+            
+            # Add track count
+            tc = album.get('tracks_count')
+            if tc:
+                additional_parts.append(f"1 track" if tc == 1 else f"{tc} tracks")
+
             if 'maximum_sampling_rate' in album:
                 sr = album.get('maximum_sampling_rate')
                 bd = album.get('maximum_bit_depth')
                 if sr and bd:
                     if sr > 44.1 or bd > 24:
-                        additional = f"{sr}kHz/{bd}bit"
+                        additional_parts.append(f"{sr}kHz/{bd}bit")
                 elif sr:
                     if sr > 44.1:
-                        additional = f"{sr}kHz"
+                        additional_parts.append(f"{sr}kHz")
+            
+            additional = additional_parts if additional_parts else None
 
             albums_out.append({
                 'id': album_id,
@@ -548,97 +608,141 @@ class ModuleInterface:
         if result_key not in results or not results[result_key].get('items'):
             if query_type is DownloadTypeEnum.label:
                 return []  # API returns no labels; use Download tab with label URL (e.g. play.qobuz.com/label/12444)
-            items = []
+            items_raw = []
         else:
-            items = []
-            for i in results[result_key]['items']:
-                duration = None
-                image_url = None
-                preview_url = None
-                additional = None
-                playlist_track_count = None
+            items_raw = results[result_key]['items']
 
-                if query_type is DownloadTypeEnum.artist:
-                    artists = None
-                    year = None
-                    # Artist image (use small for search thumbnails)
-                    if i.get('image'):
-                        image_url = i['image'].get('small') or i['image'].get('medium') or i['image'].get('large')
-                elif query_type is DownloadTypeEnum.playlist:
-                    artists = [i['owner']['name']]
-                    year = datetime.utcfromtimestamp(i['created_at']).strftime('%Y')
-                    duration = i['duration']
-                    # Playlist track count + quality tag in additional
-                    playlist_track_count = i.get('tracks_count') or (i.get('tracks') or {}).get('total')
-                    track_label = f"1 track" if playlist_track_count == 1 else f"{playlist_track_count} tracks"
-                    # Check for Hi-Res tag (slug='hi-res', featured_tag_id='51')
-                    tags_list = i.get('tags') or []
-                    is_hires = any(t.get('slug') == 'hi-res' for t in tags_list)
-                    if is_hires and playlist_track_count is not None:
-                        additional = [f"{track_label} · 🅷 HI-RES"]
-                    elif playlist_track_count is not None:
-                        additional = [track_label]
-                    else:
-                        additional = None
-                    # Playlist cover image
-                    if i.get('images300'):
-                        image_url = i['images300'][0] if i['images300'] else None
-                    elif i.get('image_rectangle'):
-                        image_url = i['image_rectangle'][0] if isinstance(i['image_rectangle'], list) else i['image_rectangle']
-                elif query_type is DownloadTypeEnum.track:
-                    # Handle missing 'performer' key safely
-                    if 'performer' in i and 'name' in i['performer']:
-                        artists = [i['performer']['name']]
-                    elif 'album' in i and 'artist' in i['album'] and 'name' in i['album']['artist']:
-                        artists = [i['album']['artist']['name']]
-                    else:
-                        artists = ['Unknown Artist']
-                    year = int(i['album']['release_date_original'].split('-')[0])
-                    duration = i['duration']
-                    if i.get('album') and i['album'].get('image'):
-                        image_url = i['album']['image'].get('small') or i['album']['image'].get('thumbnail') or i['album']['image'].get('large')
-                    sample_field = i.get('sample')
-                    preview_url = (
-                        i.get('sample_url') or i.get('preview_url') or i.get('previewable_url') or
-                        (sample_field.get('url') if isinstance(sample_field, dict) else sample_field)
-                    )
-                elif query_type is DownloadTypeEnum.album:
-                    artists = [i['artist']['name']]
-                    year = int(i['release_date_original'].split('-')[0])
-                    duration = i['duration']
-                    if i.get('image'):
-                        image_url = i['image'].get('small') or i['image'].get('thumbnail') or i['image'].get('large')
-                elif query_type is DownloadTypeEnum.label:
-                    artists = []
-                    year = None
-                    duration = None
-                    if i.get('image'):
-                        image_url = i['image'].get('small') or i['image'].get('medium') or i['image'].get('large')
+        # Batch fetch missing album metadata (tracks_count) using ThreadPoolExecutor
+        if query_type is DownloadTypeEnum.album:
+            missing_metadata = [idx for idx, i in enumerate(items_raw) if not i.get('tracks_count')]
+            if missing_metadata:
+                a_meta = {}
+                def _fetch_qobuz_album_meta(aid):
+                    try:
+                        return aid, self.session.get_album(aid)
+                    except: pass
+                    return aid, None
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    fetch_ids = [items_raw[idx]['id'] for idx in missing_metadata]
+                    for aid, full_data in executor.map(_fetch_qobuz_album_meta, fetch_ids):
+                        if full_data: a_meta[str(aid)] = full_data
+                
+                for idx in missing_metadata:
+                    aid = str(items_raw[idx]['id'])
+                    if aid in a_meta:
+                        items_raw[idx].update(a_meta[aid])
+
+        items = []
+        for i in items_raw:
+            duration = None
+            image_url = None
+            preview_url = None
+            additional = None
+            playlist_track_count = None
+
+            if query_type is DownloadTypeEnum.artist:
+                artists = None
+                year = None
+                # Artist image (use small for search thumbnails)
+                if i.get('image'):
+                    image_url = i['image'].get('small') or i['image'].get('medium') or i['image'].get('large')
+            elif query_type is DownloadTypeEnum.playlist:
+                artists = [i['owner']['name']]
+                year = datetime.utcfromtimestamp(i['created_at']).strftime('%Y')
+                duration = i['duration']
+                # Playlist track count + quality tag in additional
+                playlist_track_count = i.get('tracks_count') or (i.get('tracks') or {}).get('total')
+                track_label = f"1 track" if playlist_track_count == 1 else f"{playlist_track_count} tracks"
+                # Check for Hi-Res tag (slug='hi-res', featured_tag_id='51')
+                tags_list = i.get('tags') or []
+                is_hires = any(t.get('slug') == 'hi-res' for t in tags_list)
+                if is_hires and playlist_track_count is not None:
+                    additional = [f"{track_label}   🅷 HI-RES"]
+                elif playlist_track_count is not None:
+                    additional = [track_label]
                 else:
-                    raise Exception('Query type is invalid')
-                if query_type is DownloadTypeEnum.playlist and (playlist_track_count is None or playlist_track_count == 0):
-                    continue
-                name = i.get('name') or i.get('title')
-                name += f" ({i.get('version')})" if i.get('version') else ''
-                # additional: for playlist use track count + quality (set in branch); for others use sampling rate when present
-                # Only show quality when it's genuinely hi-res (above 44.1kHz/24-bit CD/Enhanced baseline)
+                    additional = None
+                # Playlist cover image
+                if i.get('images300'):
+                    image_url = i['images300'][0] if i['images300'] else None
+                elif i.get('image_rectangle'):
+                    image_url = i['image_rectangle'][0] if isinstance(i['image_rectangle'], list) else i['image_rectangle']
+            elif query_type is DownloadTypeEnum.track:
+                # Handle missing 'performer' key safely
+                if 'performer' in i and 'name' in i['performer']:
+                    artists = [i['performer']['name']]
+                elif 'album' in i and 'artist' in i['album'] and 'name' in i['album']['artist']:
+                    artists = [i['album']['artist']['name']]
+                else:
+                    artists = ['Unknown Artist']
+                year = int(i['album']['release_date_original'].split('-')[0])
+                duration = i['duration']
+                if i.get('album') and i['album'].get('image'):
+                    image_url = i['album']['image'].get('small') or i['album']['image'].get('thumbnail') or i['album']['image'].get('large')
+                sample_field = i.get('sample')
+                preview_url = (
+                    i.get('sample_url') or i.get('preview_url') or i.get('previewable_url') or
+                    (sample_field.get('url') if isinstance(sample_field, dict) else sample_field)
+                )
+            elif query_type is DownloadTypeEnum.album:
+                artists = [i['artist']['name']]
+                year = int(i['release_date_original'].split('-')[0])
+                duration = i['duration']
+                if i.get('image'):
+                    image_url = i['image'].get('small') or i['image'].get('thumbnail') or i['image'].get('large')
+                
+                # Format additional info for albums: Track count first, then quality
+                album_additional = []
+                tc = i.get('tracks_count')
+                if tc:
+                    album_additional.append(f"1 track" if tc == 1 else f"{tc} tracks")
+                
                 _sr = i.get("maximum_sampling_rate")
                 _bd = i.get("maximum_bit_depth")
                 _is_hires_quality = _sr is not None and (_sr > 44.1 or (_bd is not None and _bd > 24))
-                additional_for_sr = (additional if (query_type is DownloadTypeEnum.playlist and additional is not None) else
-                    ([f'{_sr}kHz/{_bd}bit'] if _is_hires_quality else None))
-                item = SearchResult(
-                    name=name,
-                    artists=artists,
-                    year=year,
-                    result_id=str(i['id']),
-                    explicit=bool(i.get('parental_warning')),
-                    additional=additional_for_sr,
-                    duration=duration,
-                    image_url=image_url,
-                    preview_url=preview_url,
-                    extra_kwargs={'data': {str(i['id']): i}} if query_type is DownloadTypeEnum.track else {}
-                )
-                items.append(item)
+                if _is_hires_quality:
+                    album_additional.append(f'{_sr}kHz/{_bd}bit')
+                
+                additional = album_additional if album_additional else None
+
+            elif query_type is DownloadTypeEnum.label:
+                artists = []
+                year = None
+                duration = None
+                if i.get('image'):
+                    image_url = i['image'].get('small') or i['image'].get('medium') or i['image'].get('large')
+            else:
+                raise Exception('Query type is invalid')
+            
+            if query_type is DownloadTypeEnum.playlist and (playlist_track_count is None or playlist_track_count == 0):
+                continue
+            
+            name = i.get('name') or i.get('title')
+            name += f" ({i.get('version')})" if i.get('version') else ''
+            
+            # for albums and playlists, 'additional' is already set above
+            # for tracks (or others), we check SR if not already set
+            final_additional = additional
+            if not final_additional and query_type not in (DownloadTypeEnum.album, DownloadTypeEnum.playlist):
+                _sr = i.get("maximum_sampling_rate")
+                _bd = i.get("maximum_bit_depth")
+                _is_hires_quality = _sr is not None and (_sr > 44.1 or (_bd is not None and _bd > 24))
+                if _is_hires_quality:
+                    final_additional = [f'{_sr}kHz/{_bd}bit']
+
+            item = SearchResult(
+                name=name,
+                artists=artists,
+                year=year,
+                result_id=str(i['id']),
+                explicit=bool(i.get('parental_warning')),
+                additional=final_additional,
+                duration=duration,
+                image_url=image_url,
+                preview_url=preview_url,
+                extra_kwargs={'data': {str(i['id']): i}} if query_type is DownloadTypeEnum.track else {}
+            )
+            items.append(item)
 
         return items
