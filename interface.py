@@ -306,7 +306,7 @@ class ModuleInterface:
         else:
             is_hi_res = (bit_depth == 24 and sample_rate >= 88.2) or (bit_depth > 24)
             if album_quality and is_hi_res:
-                album_quality = f'🅷 HI-RES  {album_quality}'
+                album_quality = f'🅷 HI-RES / {album_quality}'
 
         return AlbumInfo(
             name = album_name,
@@ -463,12 +463,12 @@ class ModuleInterface:
                     else:
                         is_hi_res = (bd == 24 and sr >= 88.2) or (bd > 24)
                         if is_hi_res:
-                            additional_parts.append(f"🅷 HI-RES  {sr}kHz/{bd}bit")
+                            additional_parts.extend(["🅷 HI-RES", f"{sr}kHz/{bd}bit"])
                         else:
                             additional_parts.append(f"{sr}kHz/{bd}bit")
                 elif sr:
                     if sr > 44.1:
-                        additional_parts.append(f"🅷 HI-RES  {sr}kHz")
+                        additional_parts.extend(["🅷 HI-RES", f"{sr}kHz"])
                     else:
                         additional_parts.append(f"{sr}kHz")
             
@@ -564,12 +564,12 @@ class ModuleInterface:
                     else:
                         is_hi_res = (bd == 24 and sr >= 88.2) or (bd > 24)
                         if is_hi_res:
-                            additional_parts.append(f"🅷 HI-RES  {sr}kHz/{bd}bit")
+                            additional_parts.extend(["🅷 HI-RES", f"{sr}kHz/{bd}bit"])
                         else:
                             additional_parts.append(f"{sr}kHz/{bd}bit")
                 elif sr:
                     if sr > 44.1:
-                        additional_parts.append(f"🅷 HI-RES  {sr}kHz")
+                        additional_parts.extend(["🅷 HI-RES", f"{sr}kHz"])
                     else:
                         additional_parts.append(f"{sr}kHz")
             
@@ -681,8 +681,8 @@ class ModuleInterface:
                 # Check for Hi-Res tag (slug='hi-res', featured_tag_id='51')
                 tags_list = i.get('tags') or []
                 is_hires = any(t.get('slug') == 'hi-res' for t in tags_list)
-                if is_hires and playlist_track_count is not None:
-                    additional = [f"{track_label}   🅷 HI-RES"]
+                if is_hires:
+                    additional = [track_label, "🅷 HI-RES"]
                 elif playlist_track_count is not None:
                     additional = [track_label]
                 else:
@@ -728,9 +728,9 @@ class ModuleInterface:
                 if _sr == 44.1 and (_bd == 16 or _bd == 24):
                     pass
                 elif _is_hi_res:
-                    album_additional.append(f'🅷 HI-RES  {_sr}kHz/{_bd}bit')
+                    album_additional.extend(["🅷 HI-RES", f"{_sr}kHz/{_bd}bit"])
                 elif _sr:
-                    album_additional.append(f'{_sr}kHz/{_bd}bit')
+                    album_additional.append(f"{_sr}kHz/{_bd}bit")
                 
                 additional = album_additional if album_additional else None
 
@@ -759,9 +759,9 @@ class ModuleInterface:
                 if _sr == 44.1 and (_bd == 16 or _bd == 24):
                     pass
                 elif _is_hi_res:
-                    final_additional = [f'🅷 HI-RES  {_sr}kHz/{_bd}bit']
+                    final_additional = ["🅷 HI-RES", f"{_sr}kHz/{_bd}bit"]
                 elif _sr:
-                    final_additional = [f'{_sr}kHz/{_bd}bit']
+                    final_additional = [f"{_sr}kHz/{_bd}bit"]
 
             item = SearchResult(
                 name=name,
