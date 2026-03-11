@@ -300,6 +300,14 @@ class ModuleInterface:
         album_name = album_data.get('title').rstrip()
         album_name += f' ({album_data.get("version")})' if album_data.get("version") else ''
 
+        album_quality = self.quality_format.format(**quality_tags) if self.quality_format != '' else None
+        if sample_rate == 44.1 and (bit_depth == 16 or bit_depth == 24):
+            album_quality = None
+        else:
+            is_hi_res = (bit_depth == 24 and sample_rate >= 88.2) or (bit_depth > 24)
+            if album_quality and is_hi_res:
+                album_quality = f'🅷 HI-RES  {album_quality}'
+
         return AlbumInfo(
             name = album_name,
             artist = album_data['artist']['name'],
@@ -307,7 +315,7 @@ class ModuleInterface:
             tracks = tracks,
             release_year = int(album_data['release_date_original'].split('-')[0]),
             explicit = album_data['parental_warning'],
-            quality = self.quality_format.format(**quality_tags) if self.quality_format != '' else None,
+            quality = album_quality,
             description = album_data.get('description'),
             cover_url = album_data['image']['large'].split('_')[0] + '_org.jpg',
             all_track_cover_jpg_url = album_data['image']['large'],
@@ -450,10 +458,18 @@ class ModuleInterface:
                 sr = album.get('maximum_sampling_rate')
                 bd = album.get('maximum_bit_depth')
                 if sr and bd:
-                    if sr > 44.1 or bd > 24:
-                        additional_parts.append(f"{sr}kHz/{bd}bit")
+                    if sr == 44.1 and (bd == 16 or bd == 24):
+                        pass
+                    else:
+                        is_hi_res = (bd == 24 and sr >= 88.2) or (bd > 24)
+                        if is_hi_res:
+                            additional_parts.append(f"🅷 HI-RES  {sr}kHz/{bd}bit")
+                        else:
+                            additional_parts.append(f"{sr}kHz/{bd}bit")
                 elif sr:
                     if sr > 44.1:
+                        additional_parts.append(f"🅷 HI-RES  {sr}kHz")
+                    else:
                         additional_parts.append(f"{sr}kHz")
             
             additional = additional_parts if additional_parts else None
@@ -543,10 +559,18 @@ class ModuleInterface:
                 sr = album.get('maximum_sampling_rate')
                 bd = album.get('maximum_bit_depth')
                 if sr and bd:
-                    if sr > 44.1 or bd > 24:
-                        additional_parts.append(f"{sr}kHz/{bd}bit")
+                    if sr == 44.1 and (bd == 16 or bd == 24):
+                        pass
+                    else:
+                        is_hi_res = (bd == 24 and sr >= 88.2) or (bd > 24)
+                        if is_hi_res:
+                            additional_parts.append(f"🅷 HI-RES  {sr}kHz/{bd}bit")
+                        else:
+                            additional_parts.append(f"{sr}kHz/{bd}bit")
                 elif sr:
                     if sr > 44.1:
+                        additional_parts.append(f"🅷 HI-RES  {sr}kHz")
+                    else:
                         additional_parts.append(f"{sr}kHz")
             
             additional = additional_parts if additional_parts else None
@@ -700,8 +724,12 @@ class ModuleInterface:
                 
                 _sr = i.get("maximum_sampling_rate")
                 _bd = i.get("maximum_bit_depth")
-                _is_hires_quality = _sr is not None and (_sr > 44.1 or (_bd is not None and _bd > 24))
-                if _is_hires_quality:
+                _is_hi_res = _sr is not None and ((_bd == 24 and _sr >= 88.2) or (_bd is not None and _bd > 24))
+                if _sr == 44.1 and (_bd == 16 or _bd == 24):
+                    pass
+                elif _is_hi_res:
+                    album_additional.append(f'🅷 HI-RES  {_sr}kHz/{_bd}bit')
+                elif _sr:
                     album_additional.append(f'{_sr}kHz/{_bd}bit')
                 
                 additional = album_additional if album_additional else None
@@ -727,8 +755,12 @@ class ModuleInterface:
             if not final_additional and query_type not in (DownloadTypeEnum.album, DownloadTypeEnum.playlist):
                 _sr = i.get("maximum_sampling_rate")
                 _bd = i.get("maximum_bit_depth")
-                _is_hires_quality = _sr is not None and (_sr > 44.1 or (_bd is not None and _bd > 24))
-                if _is_hires_quality:
+                _is_hi_res = _sr is not None and ((_bd == 24 and _sr >= 88.2) or (_bd is not None and _bd > 24))
+                if _sr == 44.1 and (_bd == 16 or _bd == 24):
+                    pass
+                elif _is_hi_res:
+                    final_additional = [f'🅷 HI-RES  {_sr}kHz/{_bd}bit']
+                elif _sr:
                     final_additional = [f'{_sr}kHz/{_bd}bit']
 
             item = SearchResult(
