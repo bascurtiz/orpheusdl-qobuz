@@ -146,7 +146,7 @@ class ModuleInterface:
         if not main_artist:
             main_artist = {'name': 'Unknown Artist', 'id': ''}
         artists = [
-            unicodedata.normalize('NFKD', main_artist['name'])
+            unicodedata.normalize('NFKD', main_artist['name'].strip())
             .encode('ascii', 'ignore')
             .decode('utf-8')
         ]
@@ -155,20 +155,33 @@ class ModuleInterface:
             for credit in track_data['performers'].split(' - '):
                 contributor_role = credit.split(', ')[1:]
                 contributor_name = credit.split(', ')[0]
-                for contributor in ['MainArtist', 'FeaturedArtist', 'Artist']:
+                for contributor in ['MainArtist', 'FeaturedArtist', 'Artist', 'Performer']:
                     if contributor in contributor_role:
                         if contributor_name not in artists:
-                            artists.append(contributor_name)
+                            artists.append(contributor_name.strip())
                         contributor_role.remove(contributor)
                 if not contributor_role:
                     continue
-                performers.append(f"{contributor_name}, {', '.join(contributor_role)}")
+                performers.append(f"{contributor_name.strip()}, {', '.join(contributor_role)}")
             track_data = dict(track_data)
             track_data['performers'] = ' - '.join(performers)
         artists[0] = main_artist['name']
 
+        album_artist_list = []
+                
+        for album_artist in track_data['album']['artists']:
+            album_artist_list.append(album_artist['name'].strip())
+        # for album_artist in track_data['album']['artists']:
+        #     if 'main-artist' in album_artist['roles']:
+        #         album_artist_list.append(album_artist['name'].strip())
+
+        # for album_artist in track_data['album']['artists']:
+        #     if 'featured-artist' in album_artist['roles']:
+        #         album_artist_list.append(album_artist['name'].strip())
+
         tags = Tags(
             album_artist = album_data.get('artist', {}).get('name', '') if isinstance(album_data.get('artist'), dict) else '',
+            album_artists = album_artist_list if album_artist_list else (album_data.get('artist', {}).get('name', '') if isinstance(album_data.get('artist'), dict) else ''),
             composer = track_data.get('composer', {}).get('name') if isinstance(track_data.get('composer'), dict) else None,
             release_date = album_data.get('release_date_original'),
             track_number = track_data.get('track_number'),
@@ -247,7 +260,8 @@ class ModuleInterface:
             codec=CodecEnum.FLAC if stream_data.get('format_id') in {6, 7, 27} else CodecEnum.NONE if not stream_data.get('format_id') else CodecEnum.MP3,
             duration=track_data.get('duration'),
             credits_extra_kwargs={'data': {track_id: track_data}},
-            download_extra_kwargs={'url': stream_data.get('url')},
+            # download_extra_kwargs={'url': stream_data.get('url')},
+            download_extra_kwargs={'url_or_track_id': stream_data.get('url'), 'url': stream_data.get('url')}, 
             error=f'Track "{track_data["title"]}" is not streamable!' if not track_data.get('streamable') else None
         )
 
@@ -300,6 +314,19 @@ class ModuleInterface:
         album_name = album_data.get('title').rstrip()
         album_name += f' ({album_data.get("version")})' if album_data.get("version") else ''
 
+        # album_artist_list = []
+
+        # for album_artist in album_data['artists']:
+        #     album_artist_list.append(album_artist.strip())
+
+        # for album_artist in album_data['artists']:
+        #     if 'main-artist' in album_artist['roles']:
+        #         album_artist_list.append(album_artist)
+
+        # for album_artist in album_data['artists']:
+        #     if 'featured-artist' in album_artist['roles']:
+        #         album_artist_list.append(album_artist)
+
         album_quality = self.quality_format.format(**quality_tags) if self.quality_format != '' else None
         if sample_rate == 44.1 and (bit_depth == 16 or bit_depth == 24):
             album_quality = None
@@ -312,6 +339,7 @@ class ModuleInterface:
             name = album_name,
             artist = album_data['artist']['name'],
             artist_id = album_data['artist']['id'],
+            # album_artists = album_artist_list if album_artist_list else album_data['artist']['name'],
             tracks = tracks,
             release_year = int(album_data['release_date_original'].split('-')[0]),
             explicit = album_data['parental_warning'],
