@@ -103,11 +103,7 @@ class ModuleInterface:
             except Exception as e:
                 raise self.session.exception(f"Qobuz login failed: {e}")
             return
-        error_msg = (
-            "Qobuz credentials are missing in settings.json. "
-            "Please fill in either email and password, or id/token. "
-            "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
-        )
+        error_msg = "Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings."
         raise self.session.exception(error_msg)
 
     def login(self, email, password):
@@ -120,11 +116,8 @@ class ModuleInterface:
             self.module_controller.temporary_settings_controller.set('token', auth_token)
             return True
         # Email/Password mode
-        if not email or not password:
             raise self.session.exception(
-                "Qobuz credentials are missing in settings.json. "
-                "Please fill in either email and password, or id/token. "
-                "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
+                "Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings."
             )
         token = self.session.login(email, password)
         self.session.auth_token = token
@@ -218,7 +211,7 @@ class ModuleInterface:
                 duration=track_data.get('duration'),
                 credits_extra_kwargs={'data': {track_id: track_data}},
                 download_extra_kwargs={},
-                error='Qobuz credentials are missing in settings.json. Please fill in either email and password, or id/token. Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly.',
+                error='Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings.',
                 preview_url=preview_url,
             )
 
@@ -261,10 +254,8 @@ class ModuleInterface:
             quality_id = self.quality_parse.get(quality_tier, 5) if quality_tier is not None else 5
             stream_data = self.session.get_file_url(str(track_id), quality_id)
             url = stream_data.get('url')
-        if not url:
             raise self.session.exception(
-                "Qobuz credentials are required for download. "
-                "Please log in in Settings (Qobuz tab) with your email and password, or id/token."
+                "Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings."
             )
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
