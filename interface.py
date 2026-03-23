@@ -116,9 +116,6 @@ class ModuleInterface:
             self.module_controller.temporary_settings_controller.set('token', auth_token)
             return True
         # Email/Password mode
-            raise self.session.exception(
-                "Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings."
-            )
         token = self.session.login(email, password)
         self.session.auth_token = token
         self.module_controller.temporary_settings_controller.set('token', token)
@@ -240,7 +237,7 @@ class ModuleInterface:
             codec=CodecEnum.FLAC if stream_data.get('format_id') in {6, 7, 27} else CodecEnum.NONE if not stream_data.get('format_id') else CodecEnum.MP3,
             duration=track_data.get('duration'),
             credits_extra_kwargs={'data': {track_id: track_data}},
-            download_extra_kwargs={'url': stream_data.get('url')},
+            download_extra_kwargs={'url_or_track_id': stream_data.get('url')},
             error=f'Track "{track_data["title"]}" is not streamable!' if not track_data.get('streamable') else None
         )
 
@@ -254,9 +251,6 @@ class ModuleInterface:
             quality_id = self.quality_parse.get(quality_tier, 5) if quality_tier is not None else 5
             stream_data = self.session.get_file_url(str(track_id), quality_id)
             url = stream_data.get('url')
-            raise self.session.exception(
-                "Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings."
-            )
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
     def get_album_info(self, album_id):
