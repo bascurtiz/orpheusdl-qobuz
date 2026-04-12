@@ -126,7 +126,7 @@ class ModuleInterface:
         except Exception:
             pass
         track_data = data.get(track_id) if data else None
-        if not track_data:
+        if not track_data or not track_data.get('performers'):
             track_data = self.session.get_track(track_id)
         album_data = track_data.get('album') or track_data
         if isinstance(album_data, dict) and 'artist' not in album_data and track_data.get('album'):
@@ -140,10 +140,19 @@ class ModuleInterface:
             .encode('ascii', 'ignore')
             .decode('utf-8')
         ]
+        role_mapping = {
+            'Lyricist': 'Lyricist',
+            'Lyricists': 'Lyricist',
+            'Vocals': 'Lyricist',
+            'Composer': 'Composer',
+            'Composers': 'Composer',
+            'Producer': 'Producer',
+            'Producers': 'Producer'
+        }
         if track_data.get('performers'):
             performers = []
             for credit in track_data['performers'].split(' - '):
-                contributor_role = credit.split(', ')[1:]
+                contributor_role = [role_mapping.get(r, r) for r in credit.split(', ')[1:]]
                 contributor_name = credit.split(', ')[0]
                 for contributor in ['MainArtist', 'FeaturedArtist', 'Artist']:
                     if contributor in contributor_role:
@@ -157,8 +166,11 @@ class ModuleInterface:
             track_data['performers'] = ' - '.join(performers)
         artists[0] = main_artist['name']
 
+        # Extract the primary album artist name.
+        album_artist = album_data.get('artist', {}).get('name', '') if isinstance(album_data.get('artist'), dict) else ''
+
         tags = Tags(
-            album_artist = album_data.get('artist', {}).get('name', '') if isinstance(album_data.get('artist'), dict) else '',
+            album_artist = album_artist,
             composer = track_data.get('composer', {}).get('name') if isinstance(track_data.get('composer'), dict) else None,
             release_date = album_data.get('release_date_original'),
             track_number = track_data.get('track_number'),
@@ -170,6 +182,7 @@ class ModuleInterface:
             label = album_data.get('label', {}).get('name') if isinstance(album_data.get('label'), dict) else None,
             copyright = album_data.get('copyright'),
             genres = [album_data.get('genre', {}).get('name')] if isinstance(album_data.get('genre'), dict) else [],
+            track_url = f"https://open.qobuz.com/track/{track_id}"
         )
 
         # track and album title fix to include version tag
@@ -580,14 +593,28 @@ class ModuleInterface:
         )
 
     def get_track_credits(self, track_id, data=None):
-        track_data = data[track_id] if track_id in data else self.session.get_track(track_id)
+        track_data = data.get(track_id) if data else None
+        if not track_data or not track_data.get('performers'):
+            track_data = self.session.get_track(track_id)
+
         track_contributors = track_data.get('performers')
+
+        # Normalize roles to standard tagging keys
+        role_mapping = {
+            'Lyricist': 'Lyricist',
+            'Lyricists': 'Lyricist',
+            'Vocals': 'Lyricist',
+            'Composer': 'Composer',
+            'Composers': 'Composer',
+            'Producer': 'Producer',
+            'Producers': 'Producer'
+        }
 
         # Credits look like: {name}, {type1}, {type2} - {name2}, {type2}
         credits_dict = {}
         if track_contributors:
             for credit in track_contributors.split(' - '):
-                contributor_role = credit.split(', ')[1:]
+                contributor_role = [role_mapping.get(r, r) for r in credit.split(', ')[1:]]
                 contributor_name = credit.split(', ')[0]
 
                 for role in contributor_role:
@@ -595,7 +622,8 @@ class ModuleInterface:
                     if role not in credits_dict:
                         credits_dict[role] = []
                     # Now add the name to the type list
-                    credits_dict[role].append(contributor_name)
+                    if contributor_name not in credits_dict[role]:
+                        credits_dict[role].append(contributor_name)
 
         # Convert the dictionary back to a list of CreditsInfo
         return [CreditsInfo(k, v) for k, v in credits_dict.items()]
