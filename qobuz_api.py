@@ -46,11 +46,14 @@ class Qobuz:
         if not params:
             params = {}
 
-        r = self.s.get(f'{self.api_base}{url}', params=params, headers=self.headers(authenticated))
+        # If user is not logged in, we must use unauthenticated request
+        is_authenticated = authenticated and bool(self.auth_token)
+        
+        r = self.s.get(f'{self.api_base}{url}', params=params, headers=self.headers(is_authenticated))
 
         # If it failed with auth error, but we were using a token, maybe the token is expired/invalid.
-        # Retry without authentication as a fallback for metadata requests.
-        if r.status_code in [401, 403] and authenticated and self.auth_token:
+        # Retry WITHOUT authentication as a fallback for metadata requests.
+        if r.status_code in [401, 403] and is_authenticated:
             r_fallback = self.s.get(f'{self.api_base}{url}', params=params, headers=self.headers(authenticated=False))
             if r_fallback.status_code in [200, 201, 202]:
                 r = r_fallback
@@ -59,6 +62,7 @@ class Qobuz:
             raise self.exception(r.text)
 
         return r.json()
+
 
     def login(self, email: str, password: str):
         params = {

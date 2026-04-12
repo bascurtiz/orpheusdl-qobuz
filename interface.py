@@ -41,30 +41,31 @@ class ModuleInterface:
 
         # Validate token and refresh if necessary
         if self.session.auth_token:
-            if not self.session.validate_token():
-                # Token invalid, try to re-login if we have credentials
-                username = settings.get('username')
-                password = settings.get('password')
-                user_id = settings.get('user_id')
-                auth_token = settings.get('auth_token')
+            try:
+                if not self.session.validate_token():
+                    # Token invalid, try to re-login if we have credentials
+                    username = settings.get('username')
+                    password = settings.get('password')
+                    user_id = settings.get('user_id')
+                    auth_token = settings.get('auth_token')
 
-                # If user provided ID/Token explicitly in settings, we likely can't refresh it without manual update.
-                # But if they provided email/password, we can re-login.
-                if username and password:
-                    try:
-                        self.login(username, password)
-                    except:
-                        # Login failed, clear invalid token so we don't keep using it
+                    if username and password:
+                        try:
+                            self.login(username, password)
+                        except:
+                            self.session.auth_token = None
+                            self.module_controller.temporary_settings_controller.set('token', '')
+                    elif user_id and auth_token:
+                         self.session.auth_token = auth_token
+                         if not self.session.validate_token():
+                             self.session.auth_token = None
+                    else:
                         self.session.auth_token = None
                         self.module_controller.temporary_settings_controller.set('token', '')
-                elif user_id and auth_token:
-                     # Revert to settings token if session storage one failed (though they might be the same)
-                     self.session.auth_token = auth_token
-                     if not self.session.validate_token():
-                         self.session.auth_token = None
-                else:
-                    self.session.auth_token = None
-                    self.module_controller.temporary_settings_controller.set('token', '')
+            except Exception:
+                # If validation itself fails (e.g. network error), just proceed - search doesn't need auth
+                pass
+
 
 
         # 5 = 320 kbps MP3, 6 = 16-bit FLAC, 7 = 24-bit / =< 96kHz FLAC, 27 =< 192 kHz FLAC
@@ -716,18 +717,37 @@ class ModuleInterface:
                 year = int(i['album']['release_date_original'].split('-')[0])
                 duration = i['duration']
                 if i.get('album') and i['album'].get('image'):
-                    image_url = i['album']['image'].get('small') or i['album']['image'].get('thumbnail') or i['album']['image'].get('large')
+                    img = i['album']['image']
+                    if isinstance(img, dict):
+                        image_url = img.get('small') or img.get('thumbnail') or img.get('large') or img.get('medium')
+                    else:
+                        image_url = img
+                
+                # Check for direct image in the track item as fallback
+                if not image_url and i.get('image'):
+                    img = i['image']
+                    image_url = img.get('small') or img.get('thumbnail') or img.get('large') if isinstance(img, dict) else img
+
                 sample_field = i.get('sample')
                 preview_url = (
                     i.get('sample_url') or i.get('preview_url') or i.get('previewable_url') or
                     (sample_field.get('url') if isinstance(sample_field, dict) else sample_field)
                 )
+                
+                # If still no preview, try to use get_sample_url helper (non-blocking)
+                if not preview_url and hasattr(self.session, 'get_sample_url'):
+                    # We don't want to call this for 25 results sequentially here, 
+                    # but if it's already in the raw data under a different name, we might find it.
+                    pass
+
             elif query_type is DownloadTypeEnum.album:
                 artists = [i['artist']['name']]
                 year = int(i['release_date_original'].split('-')[0])
                 duration = i['duration']
                 if i.get('image'):
-                    image_url = i['image'].get('small') or i['image'].get('thumbnail') or i['image'].get('large')
+                    img = i['image']
+                    image_url = img.get('small') or img.get('thumbnail') or img.get('large') if isinstance(img, dict) else img
+
                 
                 # Format additional info for albums: Track count first, then quality
                 album_additional = []
