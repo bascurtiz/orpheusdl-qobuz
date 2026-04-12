@@ -26,7 +26,7 @@ class Qobuz:
             return False
         return True
 
-    def headers(self):
+    def headers(self, authenticated=True):
         h = {
             'X-Device-Platform': 'android',
             'X-Device-Model': 'Pixel 3',
@@ -36,17 +36,24 @@ class Qobuz:
             'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 10; Pixel 3 Build/QP1A.190711.020))'
                           'QobuzMobileAndroid/5.16.1.5-b21041415'
         }
-        if self.auth_token:
+        if authenticated and self.auth_token:
             h['X-User-Auth-Token'] = self.auth_token
         return h
 
 
 
-    def _get(self, url: str, params=None):
+    def _get(self, url: str, params=None, authenticated=True):
         if not params:
             params = {}
 
-        r = self.s.get(f'{self.api_base}{url}', params=params, headers=self.headers())
+        r = self.s.get(f'{self.api_base}{url}', params=params, headers=self.headers(authenticated))
+
+        # If it failed with auth error, but we were using a token, maybe the token is expired/invalid.
+        # Retry without authentication as a fallback for metadata requests.
+        if r.status_code in [401, 403] and authenticated and self.auth_token:
+            r_fallback = self.s.get(f'{self.api_base}{url}', params=params, headers=self.headers(authenticated=False))
+            if r_fallback.status_code in [200, 201, 202]:
+                r = r_fallback
 
         if r.status_code not in [200, 201, 202]:
             raise self.exception(r.text)
@@ -94,7 +101,7 @@ class Qobuz:
             'type': query_type + 's',
             'limit': limit,
             'app_id': self.app_id
-        })
+        }, authenticated=False)
 
     def get_file_url(self, track_id: str, quality_id=27):
         params = {
@@ -127,7 +134,7 @@ class Qobuz:
             params['request_ts'] = signature[0]
             params['request_sig'] = signature[1]
 
-            result = self._get('track/getFileUrl', params)
+            result = self._get('track/getFileUrl', params, authenticated=False)
             return result.get('url')
         except Exception:
             return None
