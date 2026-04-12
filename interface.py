@@ -11,7 +11,7 @@ from .qobuz_api import Qobuz
 module_information = ModuleInformation(
     service_name = 'Qobuz',
     module_supported_modes = ModuleModes.download | ModuleModes.credits,
-    global_settings = {'app_id': '798273057', 'app_secret': 'abb21364945c0583309667d13ca3d93a', 'quality_format': '{sample_rate}kHz/{bit_depth}bit'},
+    global_settings = {'app_id': '798273057', 'app_secret': '05a4851e74ee47fda346f50cfdfc4f09', 'quality_format': '{sample_rate}kHz/{bit_depth}bit'},
     session_settings = {'username': '', 'password': '', 'user_id': '', 'auth_token': '', 'use_id_token': 'false'},
     session_storage_variables = ['token'],
     netlocation_constant = 'qobuz',
@@ -63,8 +63,19 @@ class ModuleInterface:
                         self.session.auth_token = None
                         self.module_controller.temporary_settings_controller.set('token', '')
             except Exception:
-                # If validation itself fails (e.g. network error), just proceed - search doesn't need auth
+                # If validation itself fails (e.g. network error), just proceed - search/meta will retry login if needed
                 pass
+        else:
+            # No token found, but we might have credentials. 
+            # Try to login once at startup to avoid "Guest Access Denied" during first metadata calls.
+            username = (settings.get('username') or '').strip()
+            password = (settings.get('password') or '').strip()
+            if username and password:
+                try:
+                    self.login(username, password)
+                except:
+                    pass
+
 
 
 
@@ -122,10 +133,8 @@ class ModuleInterface:
         self.module_controller.temporary_settings_controller.set('token', token)
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
-        try:
-            self._ensure_credentials()
-        except Exception:
-            pass
+        self._ensure_credentials()
+
         track_data = data.get(track_id) if data else None
         if not track_data or not track_data.get('performers'):
             track_data = self.session.get_track(track_id)
@@ -268,7 +277,9 @@ class ModuleInterface:
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
     def get_album_info(self, album_id):
+        self._ensure_credentials()
         album_data = self.session.get_album(album_id)
+
         booklet_url = None
         if album_data.get('goodies'):
             try:
@@ -325,8 +336,10 @@ class ModuleInterface:
         )
 
     def get_playlist_info(self, playlist_id):
+        self._ensure_credentials()
         # Fetch first batch to get total track count
         playlist_data = self.session.get_playlist(playlist_id)
+
         
         tracks, extra_kwargs = [], {}
         
@@ -372,12 +385,9 @@ class ModuleInterface:
         )
 
     def get_artist_info(self, artist_id, get_credited_albums):
-        """
-        Return artist info plus a list of album objects with metadata for GUI display.
-        The downloader still works because it only requires that each album item expose an ID
-        (either as a plain string, dict['id'], or object.id).
-        """
+        self._ensure_credentials()
         artist_data = self.session.get_artist(artist_id)
+
         albums_raw = (artist_data.get('albums') or {}).get('items') or []
         
         # Batch fetch missing album metadata (tracks_count and duration)
@@ -494,8 +504,10 @@ class ModuleInterface:
         )
 
     def get_label_info(self, label_id: str, get_credited_albums: bool = True, **kwargs) -> ArtistInfo:
+        self._ensure_credentials()
         """Return label metadata and albums as ArtistInfo (same shape as artist for download flow)."""
         label_data = self.session.get_label(label_id)
+
         label_name = label_data.get('name') or 'Unknown Label'
         albums_raw = (label_data.get('albums') or {}).get('items') or []
         
@@ -724,15 +736,24 @@ class ModuleInterface:
                         image_url = img
                 
                 # Check for direct image in the track item as fallback
-                if not image_url and i.get('image'):
-                    img = i['image']
-                    image_url = img.get('small') or img.get('thumbnail') or img.get('large') if isinstance(img, dict) else img
+                if not image_url:
+                    # Try many different possible keys for image
+                    img = i.get('image') or i.get('image_thumbnail') or i.get('image_small') or i.get('image_large')
+                    if img:
+                        image_url = img.get('small') or img.get('thumbnail') or img.get('large') if isinstance(img, dict) else img
 
                 sample_field = i.get('sample')
                 preview_url = (
                     i.get('sample_url') or i.get('preview_url') or i.get('previewable_url') or
                     (sample_field.get('url') if isinstance(sample_field, dict) else sample_field)
-                )
+                ) or i.get('url_sample') or i.get('preview')
+                
+                # If still no preview, try to look for it in the album data if it exists
+                if not preview_url and i.get('album') and isinstance(i['album'], dict):
+                    alb_sample = i['album'].get('sample')
+                    if alb_sample:
+                        preview_url = alb_sample.get('url') if isinstance(alb_sample, dict) else alb_sample
+
                 
                 # If still no preview, try to use get_sample_url helper (non-blocking)
                 if not preview_url and hasattr(self.session, 'get_sample_url'):
