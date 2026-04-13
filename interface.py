@@ -11,7 +11,7 @@ from .qobuz_api import Qobuz
 module_information = ModuleInformation(
     service_name = 'Qobuz',
     module_supported_modes = ModuleModes.download | ModuleModes.credits,
-    global_settings = {'app_id': '798273057', 'app_secret': 'abb21364945c0583309667d13ca3d93a', 'quality_format': '{sample_rate}kHz/{bit_depth}bit'},
+    global_settings = {'app_id': '798273057', 'app_secret': '05a4851e74ee47fda346f50cfdfc4f09', 'quality_format': '{sample_rate}kHz/{bit_depth}bit'},
     session_settings = {'username': '', 'password': '', 'user_id': '', 'auth_token': '', 'use_id_token': 'false'},
     session_storage_variables = ['token'],
     netlocation_constant = 'qobuz',
@@ -41,30 +41,42 @@ class ModuleInterface:
 
         # Validate token and refresh if necessary
         if self.session.auth_token:
-            if not self.session.validate_token():
-                # Token invalid, try to re-login if we have credentials
-                username = settings.get('username')
-                password = settings.get('password')
-                user_id = settings.get('user_id')
-                auth_token = settings.get('auth_token')
+            try:
+                if not self.session.validate_token():
+                    # Token invalid, try to re-login if we have credentials
+                    username = settings.get('username')
+                    password = settings.get('password')
+                    user_id = settings.get('user_id')
+                    auth_token = settings.get('auth_token')
 
-                # If user provided ID/Token explicitly in settings, we likely can't refresh it without manual update.
-                # But if they provided email/password, we can re-login.
-                if username and password:
-                    try:
-                        self.login(username, password)
-                    except:
-                        # Login failed, clear invalid token so we don't keep using it
+                    if username and password:
+                        try:
+                            self.login(username, password)
+                        except:
+                            self.session.auth_token = None
+                            self.module_controller.temporary_settings_controller.set('token', '')
+                    elif user_id and auth_token:
+                         self.session.auth_token = auth_token
+                         if not self.session.validate_token():
+                             self.session.auth_token = None
+                    else:
                         self.session.auth_token = None
                         self.module_controller.temporary_settings_controller.set('token', '')
-                elif user_id and auth_token:
-                     # Revert to settings token if session storage one failed (though they might be the same)
-                     self.session.auth_token = auth_token
-                     if not self.session.validate_token():
-                         self.session.auth_token = None
-                else:
-                    self.session.auth_token = None
-                    self.module_controller.temporary_settings_controller.set('token', '')
+            except Exception:
+                # If validation itself fails (e.g. network error), just proceed - search/meta will retry login if needed
+                pass
+        else:
+            # No token found, but we might have credentials. 
+            # Try to login once at startup to avoid "Guest Access Denied" during first metadata calls.
+            username = (settings.get('username') or '').strip()
+            password = (settings.get('password') or '').strip()
+            if username and password:
+                try:
+                    self.login(username, password)
+                except:
+                    pass
+
+
 
 
         # 5 = 320 kbps MP3, 6 = 16-bit FLAC, 7 = 24-bit / =< 96kHz FLAC, 27 =< 192 kHz FLAC
@@ -103,11 +115,7 @@ class ModuleInterface:
             except Exception as e:
                 raise self.session.exception(f"Qobuz login failed: {e}")
             return
-        error_msg = (
-            "Qobuz credentials are missing in settings.json. "
-            "Please fill in either email and password, or id/token. "
-            "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
-        )
+        error_msg = "Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings."
         raise self.session.exception(error_msg)
 
     def login(self, email, password):
@@ -120,23 +128,15 @@ class ModuleInterface:
             self.module_controller.temporary_settings_controller.set('token', auth_token)
             return True
         # Email/Password mode
-        if not email or not password:
-            raise self.session.exception(
-                "Qobuz credentials are missing in settings.json. "
-                "Please fill in either email and password, or id/token. "
-                "Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly."
-            )
         token = self.session.login(email, password)
         self.session.auth_token = token
         self.module_controller.temporary_settings_controller.set('token', token)
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
-        try:
-            self._ensure_credentials()
-        except Exception:
-            pass
+        self._ensure_credentials()
+
         track_data = data.get(track_id) if data else None
-        if not track_data:
+        if not track_data or not track_data.get('performers'):
             track_data = self.session.get_track(track_id)
         album_data = track_data.get('album') or track_data
         if isinstance(album_data, dict) and 'artist' not in album_data and track_data.get('album'):
@@ -150,10 +150,19 @@ class ModuleInterface:
             .encode('ascii', 'ignore')
             .decode('utf-8')
         ]
+        role_mapping = {
+            'Lyricist': 'Lyricist',
+            'Lyricists': 'Lyricist',
+            'Vocals': 'Lyricist',
+            'Composer': 'Composer',
+            'Composers': 'Composer',
+            'Producer': 'Producer',
+            'Producers': 'Producer'
+        }
         if track_data.get('performers'):
             performers = []
             for credit in track_data['performers'].split(' - '):
-                contributor_role = credit.split(', ')[1:]
+                contributor_role = [role_mapping.get(r, r) for r in credit.split(', ')[1:]]
                 contributor_name = credit.split(', ')[0]
                 for contributor in ['MainArtist', 'FeaturedArtist', 'Artist', 'Performer']:
                     if contributor in contributor_role:
@@ -193,6 +202,7 @@ class ModuleInterface:
             label = album_data.get('label', {}).get('name') if isinstance(album_data.get('label'), dict) else None,
             copyright = album_data.get('copyright'),
             genres = [album_data.get('genre', {}).get('name')] if isinstance(album_data.get('genre'), dict) else [],
+            track_url = f"https://open.qobuz.com/track/{track_id}"
         )
 
         # track and album title fix to include version tag
@@ -231,7 +241,7 @@ class ModuleInterface:
                 duration=track_data.get('duration'),
                 credits_extra_kwargs={'data': {track_id: track_data}},
                 download_extra_kwargs={},
-                error='Qobuz credentials are missing in settings.json. Please fill in either email and password, or id/token. Use the OrpheusDL GUI Settings tab (Qobuz) or edit config/settings.json directly.',
+                error='Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings.',
                 preview_url=preview_url,
             )
 
@@ -275,15 +285,12 @@ class ModuleInterface:
             quality_id = self.quality_parse.get(quality_tier, 5) if quality_tier is not None else 5
             stream_data = self.session.get_file_url(str(track_id), quality_id)
             url = stream_data.get('url')
-        if not url:
-            raise self.session.exception(
-                "Qobuz credentials are required for download. "
-                "Please log in in Settings (Qobuz tab) with your email and password, or id/token."
-            )
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
     def get_album_info(self, album_id):
+        self._ensure_credentials()
         album_data = self.session.get_album(album_id)
+
         booklet_url = None
         if album_data.get('goodies'):
             try:
@@ -354,8 +361,10 @@ class ModuleInterface:
         )
 
     def get_playlist_info(self, playlist_id):
+        self._ensure_credentials()
         # Fetch first batch to get total track count
         playlist_data = self.session.get_playlist(playlist_id)
+
         
         tracks, extra_kwargs = [], {}
         
@@ -401,12 +410,9 @@ class ModuleInterface:
         )
 
     def get_artist_info(self, artist_id, get_credited_albums):
-        """
-        Return artist info plus a list of album objects with metadata for GUI display.
-        The downloader still works because it only requires that each album item expose an ID
-        (either as a plain string, dict['id'], or object.id).
-        """
+        self._ensure_credentials()
         artist_data = self.session.get_artist(artist_id)
+
         albums_raw = (artist_data.get('albums') or {}).get('items') or []
         
         # Batch fetch missing album metadata (tracks_count and duration)
@@ -523,8 +529,10 @@ class ModuleInterface:
         )
 
     def get_label_info(self, label_id: str, get_credited_albums: bool = True, **kwargs) -> ArtistInfo:
+        self._ensure_credentials()
         """Return label metadata and albums as ArtistInfo (same shape as artist for download flow)."""
         label_data = self.session.get_label(label_id)
+
         label_name = label_data.get('name') or 'Unknown Label'
         albums_raw = (label_data.get('albums') or {}).get('items') or []
         
@@ -623,14 +631,28 @@ class ModuleInterface:
         )
 
     def get_track_credits(self, track_id, data=None):
-        track_data = data[track_id] if track_id in data else self.session.get_track(track_id)
+        track_data = data.get(track_id) if data else None
+        if not track_data or not track_data.get('performers'):
+            track_data = self.session.get_track(track_id)
+
         track_contributors = track_data.get('performers')
+
+        # Normalize roles to standard tagging keys
+        role_mapping = {
+            'Lyricist': 'Lyricist',
+            'Lyricists': 'Lyricist',
+            'Vocals': 'Lyricist',
+            'Composer': 'Composer',
+            'Composers': 'Composer',
+            'Producer': 'Producer',
+            'Producers': 'Producer'
+        }
 
         # Credits look like: {name}, {type1}, {type2} - {name2}, {type2}
         credits_dict = {}
         if track_contributors:
             for credit in track_contributors.split(' - '):
-                contributor_role = credit.split(', ')[1:]
+                contributor_role = [role_mapping.get(r, r) for r in credit.split(', ')[1:]]
                 contributor_name = credit.split(', ')[0]
 
                 for role in contributor_role:
@@ -638,7 +660,8 @@ class ModuleInterface:
                     if role not in credits_dict:
                         credits_dict[role] = []
                     # Now add the name to the type list
-                    credits_dict[role].append(contributor_name)
+                    if contributor_name not in credits_dict[role]:
+                        credits_dict[role].append(contributor_name)
 
         # Convert the dictionary back to a list of CreditsInfo
         return [CreditsInfo(k, v) for k, v in credits_dict.items()]
@@ -731,18 +754,46 @@ class ModuleInterface:
                 year = int(i['album']['release_date_original'].split('-')[0])
                 duration = i['duration']
                 if i.get('album') and i['album'].get('image'):
-                    image_url = i['album']['image'].get('small') or i['album']['image'].get('thumbnail') or i['album']['image'].get('large')
+                    img = i['album']['image']
+                    if isinstance(img, dict):
+                        image_url = img.get('small') or img.get('thumbnail') or img.get('large') or img.get('medium')
+                    else:
+                        image_url = img
+                
+                # Check for direct image in the track item as fallback
+                if not image_url:
+                    # Try many different possible keys for image
+                    img = i.get('image') or i.get('image_thumbnail') or i.get('image_small') or i.get('image_large')
+                    if img:
+                        image_url = img.get('small') or img.get('thumbnail') or img.get('large') if isinstance(img, dict) else img
+
                 sample_field = i.get('sample')
                 preview_url = (
                     i.get('sample_url') or i.get('preview_url') or i.get('previewable_url') or
                     (sample_field.get('url') if isinstance(sample_field, dict) else sample_field)
-                )
+                ) or i.get('url_sample') or i.get('preview')
+                
+                # If still no preview, try to look for it in the album data if it exists
+                if not preview_url and i.get('album') and isinstance(i['album'], dict):
+                    alb_sample = i['album'].get('sample')
+                    if alb_sample:
+                        preview_url = alb_sample.get('url') if isinstance(alb_sample, dict) else alb_sample
+
+                
+                # If still no preview, try to use get_sample_url helper (non-blocking)
+                if not preview_url and hasattr(self.session, 'get_sample_url'):
+                    # We don't want to call this for 25 results sequentially here, 
+                    # but if it's already in the raw data under a different name, we might find it.
+                    pass
+
             elif query_type is DownloadTypeEnum.album:
                 artists = [i['artist']['name']]
                 year = int(i['release_date_original'].split('-')[0])
                 duration = i['duration']
                 if i.get('image'):
-                    image_url = i['image'].get('small') or i['image'].get('thumbnail') or i['image'].get('large')
+                    img = i['image']
+                    image_url = img.get('small') or img.get('thumbnail') or img.get('large') if isinstance(img, dict) else img
+
                 
                 # Format additional info for albums: Track count first, then quality
                 album_additional = []
