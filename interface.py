@@ -1,8 +1,13 @@
+import os
 import unicodedata
 import re
 import logging
+import socket
+import threading
+import webbrowser
 from datetime import datetime
-from urllib.parse import urlparse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
 import concurrent.futures
 
 from utils.models import *
@@ -12,9 +17,10 @@ from .qobuz_api import Qobuz
 module_information = ModuleInformation(
     service_name = 'Qobuz',
     module_supported_modes = ModuleModes.download | ModuleModes.credits,
-    global_settings = {'app_id': '798273057', 'app_secret': '05a4851e74ee47fda346f50cfdfc4f09', 'quality_format': '{sample_rate}kHz/{bit_depth}bit'},
+    login_behaviour = ManualEnum.manual,
+    global_settings = {'app_id': '798273057', 'app_secret': 'abb21364945c0583309667d13ca3d93a', 'quality_format': '{sample_rate}kHz/{bit_depth}bit'},
     session_settings = {'username': '', 'password': '', 'user_id': '', 'auth_token': '', 'use_id_token': 'false'},
-    session_storage_variables = ['token'],
+    session_storage_variables = ['token', 'user_id'],
     netlocation_constant = 'qobuz',
     url_constants={
         'track': DownloadTypeEnum.track,
@@ -32,43 +38,23 @@ class ModuleInterface:
     def __init__(self, module_controller: ModuleController):
         settings = module_controller.module_settings
         self.session = Qobuz(settings['app_id'], settings['app_secret'], module_controller.module_error)
-        
-        # Use saved auth_token from settings (ID/Token mode) or from session storage (email/password login)
-        self.session.auth_token = (
-            module_controller.temporary_settings_controller.read('token')
-            or settings.get('auth_token')
-        )
         self.module_controller = module_controller
+        
+        # Load credentials from both persistent settings and session storage
+        storage = module_controller.temporary_settings_controller
+        auth_token = storage.read('token') or settings.get('auth_token')
+        user_id = storage.read('user_id') or settings.get('user_id')
+        
+        self.session.auth_token = auth_token
+        # Ensure user_id is in module_settings for GUI visibility
+        if not settings.get('user_id') and user_id:
+            settings['user_id'] = user_id
 
-        # Validate token and refresh if necessary
+        # Trust the saved token at startup - we will re-validate only if an API call fails
         if self.session.auth_token:
-            try:
-                if not self.session.validate_token():
-                    # Token invalid, try to re-login if we have credentials
-                    username = settings.get('username')
-                    password = settings.get('password')
-                    user_id = settings.get('user_id')
-                    auth_token = settings.get('auth_token')
-
-                    if username and password:
-                        try:
-                            self.login(username, password)
-                        except:
-                            self.session.auth_token = None
-                            self.module_controller.temporary_settings_controller.set('token', '')
-                    elif user_id and auth_token:
-                         self.session.auth_token = auth_token
-                         if not self.session.validate_token():
-                             self.session.auth_token = None
-                    else:
-                        self.session.auth_token = None
-                        self.module_controller.temporary_settings_controller.set('token', '')
-            except Exception:
-                # If validation itself fails (e.g. network error), just proceed - search/meta will retry login if needed
-                pass
+            pass
         else:
-            # No token found, but we might have credentials. 
-            # Try to login once at startup to avoid "Guest Access Denied" during first metadata calls.
+            # No token, try fallback to email/pass if present
             username = (settings.get('username') or '').strip()
             password = (settings.get('password') or '').strip()
             if username and password:
@@ -93,12 +79,13 @@ class ModuleInterface:
         self.quality_tier = module_controller.orpheus_options.quality_tier
         self.quality_format = settings.get('quality_format')
 
-    def _ensure_credentials(self):
+    def _ensure_credentials(self, force=False, status_callback=None):
         """Require valid user credentials before download/metadata that leads to download.
-        Without this, only previews would be downloaded. Matches Spotify behavior: show
-        what's missing and where to fill it in."""
+        Without this, only previews would be downloaded. Matches TIDAL behavior: 
+        auto-triggers OAuth flow if missing/force=True."""
         if getattr(self.session, 'auth_token', None):
             return
+            
         settings = self.module_controller.module_settings
         username = (settings.get('username') or '').strip()
         password = (settings.get('password') or '').strip()
@@ -106,24 +93,133 @@ class ModuleInterface:
         auth_token = (settings.get('auth_token') or '').strip()
         has_email_pass = username and password
         has_id_token = user_id and auth_token
+        
+        # Priority: 1. ID/Token (OAuth) 2. Email/Pass
         if has_id_token:
             self.session.auth_token = auth_token
-            self.module_controller.temporary_settings_controller.set('token', auth_token)
+            # We don't pre-validate here; let the actual API call handle errors.
             return
+
         if has_email_pass:
             try:
                 self.login(username, password)
+                return
             except Exception as e:
-                raise self.session.exception(f"Qobuz login failed: {e}")
-            return
-        error_msg = "Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings."
-        raise self.session.exception(error_msg)
+                logging.debug(f"Qobuz: Email login failed, falling back to OAuth if forced: {e}")
+
+        # If we got here, we have no valid token. 
+        # In CLI mode, or if forced (GUI button/download started), trigger OAuth
+        is_gui_mode = os.environ.get('ORPHEUS_GUI') == '1'
+        if not is_gui_mode or force:
+            self._start_oauth_flow(status_callback)
+        else:
+            # GUI only - allow guest mode for now
+            pass
+
+    def _start_oauth_flow(self, status_callback=None):
+        """
+        Implementation of Qobuz OAuth flow.
+        Opens the browser, waits for the redirect on a local port, 
+        and then completes the login.
+        """
+        def _log(msg):
+            if status_callback: status_callback(msg)
+            else: self.module_controller.printer_controller.oprint(f"Qobuz: {msg}")
+
+        try:
+            # 0. Check if we already have a token to avoid unnecessary flows
+            if self.is_authenticated():
+                return
+
+            # 1. Scrape current bundle info to ensure we have the latest app_id/private_key
+            _log("Scraping Qobuz tokens...")
+            info = self.session.get_bundle_info()
+            app_id = info['app_id']
+            # Update session with the latest scraped app_id
+            self.session.app_id = app_id
+
+            # 2. Find a free port for the redirect server
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))
+                port = s.getsockname()[1]
+            
+            oauth_url = f"https://www.qobuz.com/signin/oauth?ext_app_id={app_id}&redirect_url=http://localhost:{port}"
+
+            class OAuthHandler(BaseHTTPRequestHandler):
+                code = None
+                def do_GET(self):
+                    parsed = urlparse(self.path)
+                    params = parse_qs(parsed.query)
+                    code = params.get("code", [params.get("code_autorisation", [""])[0]])[0]
+                    if code:
+                        OAuthHandler.code = code
+                        self.send_response(200)
+                        self.send_header("Content-type", "text/html")
+                        self.end_headers()
+                        self.wfile.write(b"<html><body style='font-family:sans-serif;text-align:center;padding:50px;background:#121212;color:white;'>")
+                        self.wfile.write(b"<h2 style='color:#6ee7f7'>Qobuz Login Successful!</h2>")
+                        self.wfile.write(b"<p>You can now close this tab and return to OrpheusDL.</p>")
+                        self.wfile.write(b"</body></html>")
+                    else:
+                        self.send_response(400)
+                        self.end_headers()
+                        self.wfile.write(b"No code received.")
+
+                def log_message(self, format, *args):
+                    return # Silence logging
+
+            # Event to signal completion
+            completion_event = threading.Event()
+
+            _log(f"Waiting for browser login... (Link: {oauth_url})")
+            webbrowser.open(oauth_url)
+
+            # Start server in a thread to capture the code
+            def _run_server():
+                try:
+                    server = HTTPServer(('127.0.0.1', port), OAuthHandler)
+                    server.handle_request() # Wait for one request then exit
+                    server.server_close()
+                    
+                    if OAuthHandler.code:
+                        _log("Logging in with code...")
+                        self.login_with_oauth_code(OAuthHandler.code)
+                        _log("OAuth Login Successful!")
+                    else:
+                        _log("OAuth failed: No code received.")
+                except Exception as e:
+                    _log(f"Login process error: {str(e)}")
+                finally:
+                    completion_event.set()
+
+            threading.Thread(target=_run_server, daemon=True).start()
+
+            # Wait for completion (blocking) - timeout after 3 minutes
+            if not completion_event.wait(timeout=180):
+                _log("OAuth timeout: Login took too long.")
+                return False
+
+            return self.is_authenticated()
+
+        except Exception as e:
+            _log(f"OAuth Flow Error: {str(e)}")
+            return False
+
+    def is_authenticated(self) -> bool:
+        """Return True if we have a valid auth token."""
+        return bool(self.session.auth_token)
+
+    def ensure_can_download(self) -> bool:
+        """Called by downloader to ensure we are logged in."""
+        if not self.is_authenticated():
+            self._ensure_credentials(force=True)
+        return True
 
     def login(self, email, password):
         settings = self.module_controller.module_settings
         user_id = (settings.get('user_id') or '').strip()
         auth_token = (settings.get('auth_token') or '').strip()
-        # ID/Token mode: use saved auth_token, no login call
+        # ID/Token mode (previously saved OAuth or manual token)
         if user_id and auth_token:
             self.session.auth_token = auth_token
             self.module_controller.temporary_settings_controller.set('token', auth_token)
@@ -132,6 +228,30 @@ class ModuleInterface:
         token = self.session.login(email, password)
         self.session.auth_token = token
         self.module_controller.temporary_settings_controller.set('token', token)
+
+    def login_with_oauth_code(self, code):
+        """Exchange OAuth code and update both settings and session."""
+        try:
+            usr_info = self.session.login_with_oauth_code(code)
+            auth_token = usr_info.get('user_auth_token') or self.session.auth_token
+            user_id = str(usr_info.get('user', {}).get('id', ''))
+            
+            # Persist to persistent settings so it survives restarts
+            self.module_controller.module_settings['auth_token'] = auth_token
+            self.module_controller.module_settings['user_id'] = user_id
+            
+            # Clears email/pass to indicate OAuth is active
+            self.module_controller.module_settings['username'] = ''
+            self.module_controller.module_settings['password'] = ''
+            
+            # Save to temporary session storage (loginstorage.bin)
+            self.module_controller.temporary_settings_controller.set('token', auth_token)
+            self.module_controller.temporary_settings_controller.set('user_id', user_id)
+            
+            return True
+        except Exception as e:
+            logging.error(f"Qobuz OAuth login failed: {e}")
+            raise e
 
     def _get_year(self, date_val):
         if not date_val:
@@ -147,6 +267,7 @@ class ModuleInterface:
             return None
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
+        self._ensure_credentials()
         # Resolve proxy IDs (e.g. from Apple Music search) if needed
         # We only do this if we have credentials, which is ensured by the line above.
         if isinstance(data, dict) and data.get('proxy_platform') == 'applemusic':
@@ -236,6 +357,7 @@ class ModuleInterface:
 
         # When not authenticated: return display-only TrackInfo (no download URL); expand works, download will raise in get_track_download
         if not getattr(self.session, 'auth_token', None):
+            self._ensure_credentials()
             preview_url = None
             try:
                 preview_url = self.session.get_sample_url(str(track_id))
@@ -259,12 +381,22 @@ class ModuleInterface:
                 duration=track_data.get('duration'),
                 credits_extra_kwargs={'data': {track_id: track_data}},
                 download_extra_kwargs={},
-                error='Qobuz credentials are required for downloading. Please fill in either email and password, or id/token in the settings.',
+                error=None,
                 preview_url=preview_url,
             )
 
-        quality_tier = self.quality_parse[quality_tier]
-        stream_data = self.session.get_file_url(track_id, quality_tier)
+        quality_tier_id = self.quality_parse[quality_tier]
+        try:
+            stream_data = self.session.get_file_url(track_id, quality_tier_id)
+        except Exception as e:
+            # If we get a 401 for MP3 (format 5), it might be an API quirk.
+            # Don't crash; fall back to basic info and let get_track_download handle it later.
+            is_401 = '"code":401' in str(e) or "authentication is required" in str(e).lower()
+            if is_401 and quality_tier_id == 5:
+                stream_data = {'bit_depth': 16, 'sampling_rate': 44.1, 'format_id': 5, 'url': None}
+            else:
+                raise e
+
         bitrate = 320
         if stream_data.get('format_id') in {6, 7, 27}:
             bitrate = int((stream_data['sampling_rate'] * 1000 * stream_data['bit_depth'] * 2) // 1000)
@@ -305,7 +437,7 @@ class ModuleInterface:
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
     def get_album_info(self, album_id):
-        # Allow guest access to album metadata
+        self._ensure_credentials()
         album_data = self.session.get_album(album_id)
 
         booklet_url = None
@@ -364,7 +496,7 @@ class ModuleInterface:
         )
 
     def get_playlist_info(self, playlist_id):
-        # Allow guest access to playlist metadata
+        self._ensure_credentials()
         # Fetch first batch to get total track count
         playlist_data = self.session.get_playlist(playlist_id)
 
@@ -413,7 +545,7 @@ class ModuleInterface:
         )
 
     def get_artist_info(self, artist_id, get_credited_albums):
-        # Allow guest access to artist metadata
+        self._ensure_credentials()
         artist_data = self.session.get_artist(artist_id)
 
         albums_raw = (artist_data.get('albums') or {}).get('items') or []
@@ -674,7 +806,6 @@ class ModuleInterface:
         return [CreditsInfo(k, v) for k, v in credits_dict.items()]
 
     def search(self, query_type: DownloadTypeEnum, query, track_info: TrackInfo = None, limit: int = 10):
-        # Catalog search works with app_id only (no user login). Login required only for download.
         # Fallback to Public Web App ID for guest searching if the primary one is restricted.
         GUEST_APP_ID = '712109809'
         GUEST_APP_SECRET = '589be88e4538daea11f509d29e4a23b1'
