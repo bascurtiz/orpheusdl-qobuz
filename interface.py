@@ -557,10 +557,51 @@ class ModuleInterface:
             url = stream_data.get('url')
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
-    def get_album_info(self, album_id):
-        self._ensure_credentials()
-        album_data = self.session.get_album(album_id)
+    def _fetch_album_page(self, album_id: str):
+        def _get():
+            return self.session.get_album(str(album_id))
 
+        if self.is_authenticated():
+            try:
+                return _get()
+            except Exception as e:
+                if not self._is_auth_api_error(e):
+                    raise
+                logging.debug('Qobuz: album/get failed with session credentials, retrying as guest')
+                with self._with_guest_credentials():
+                    return _get()
+        with self._with_guest_credentials():
+            return _get()
+
+    def _fetch_playlist_page(self, playlist_id: str, limit: int = 500, offset: int = 0):
+        def _get():
+            return self.session.get_playlist(str(playlist_id), limit=limit, offset=offset)
+
+        if self.is_authenticated():
+            try:
+                return _get()
+            except Exception as e:
+                if not self._is_auth_api_error(e):
+                    raise
+                logging.debug('Qobuz: playlist/get failed with session credentials, retrying as guest')
+                with self._with_guest_credentials():
+                    return _get()
+        with self._with_guest_credentials():
+            return _get()
+
+    def get_album_info(self, album_id, **kwargs):
+        if self.is_authenticated():
+            self._ensure_credentials()
+
+        def _build():
+            return self._album_info_from_page(self._fetch_album_page(album_id))
+
+        if not self.is_authenticated():
+            with self._with_guest_credentials():
+                return _build()
+        return _build()
+
+    def _album_info_from_page(self, album_data: dict) -> AlbumInfo:
         booklet_url = None
         if album_data.get('goodies'):
             try:
@@ -577,11 +618,10 @@ class ModuleInterface:
             extra_kwargs[track_id] = track
 
         # get the wanted quality for an actual album quality_format string
-        quality_tier = self.quality_parse[self.quality_tier]
-        # TODO: Ignore sample_rate and bit_depth if album_data['hires'] is False?
-        bit_depth = 24 if quality_tier == 27 and album_data['hires_streamable'] else 16
-        sample_rate = album_data['maximum_sampling_rate'] if quality_tier == 27 and album_data[
-            'hires_streamable'] else 44.1
+        quality_tier = self.quality_parse.get(self.quality_tier, 6)
+        hires_streamable = album_data.get('hires_streamable', False)
+        bit_depth = 24 if quality_tier == 27 and hires_streamable else 16
+        sample_rate = album_data['maximum_sampling_rate'] if quality_tier == 27 and hires_streamable else 44.1
 
         quality_tags = {
             'sample_rate': sample_rate,
@@ -625,43 +665,42 @@ class ModuleInterface:
             expected_track_count=int(tracks_count) if tracks_count is not None else None,
         )
 
-    def get_playlist_info(self, playlist_id):
-        self._ensure_credentials()
-        # Fetch first batch to get total track count
-        playlist_data = self.session.get_playlist(playlist_id)
+    def get_playlist_info(self, playlist_id, **kwargs):
+        if self.is_authenticated():
+            self._ensure_credentials()
 
-        
-        tracks, extra_kwargs = [], {}
-        
-        # Process first batch of tracks
-        for track in playlist_data['tracks']['items']:
-            track_id = str(track['id'])
-            extra_kwargs[track_id] = track
-            tracks.append(track_id)
-        
-        # Check if there are more tracks to fetch (pagination)
-        total_tracks = playlist_data['tracks'].get('total', len(playlist_data['tracks']['items']))
-        fetched_tracks = len(playlist_data['tracks']['items'])
-        
-        # Fetch remaining tracks if playlist has more than initial batch
-        if fetched_tracks < total_tracks:
-            offset = fetched_tracks
-            limit = 500  # Qobuz API limit per request
-            
-            while offset < total_tracks:
-                # Fetch next batch
-                batch_data = self.session.get_playlist(playlist_id, limit=limit, offset=offset)
-                
-                if not batch_data['tracks']['items']:
-                    break  # No more tracks to fetch
-                
-                # Process batch tracks
-                for track in batch_data['tracks']['items']:
-                    track_id = str(track['id'])
-                    extra_kwargs[track_id] = track
-                    tracks.append(track_id)
-                
-                offset += len(batch_data['tracks']['items'])
+        def _build():
+            playlist_data = self._fetch_playlist_page(playlist_id)
+            tracks, extra_kwargs = [], {}
+
+            for track in playlist_data['tracks']['items']:
+                track_id = str(track['id'])
+                extra_kwargs[track_id] = track
+                tracks.append(track_id)
+
+            total_tracks = playlist_data['tracks'].get('total', len(playlist_data['tracks']['items']))
+            fetched_tracks = len(playlist_data['tracks']['items'])
+
+            if fetched_tracks < total_tracks:
+                offset = fetched_tracks
+                limit = 500
+                while offset < total_tracks:
+                    batch_data = self._fetch_playlist_page(playlist_id, limit=limit, offset=offset)
+                    if not batch_data['tracks']['items']:
+                        break
+                    for track in batch_data['tracks']['items']:
+                        track_id = str(track['id'])
+                        extra_kwargs[track_id] = track
+                        tracks.append(track_id)
+                    offset += len(batch_data['tracks']['items'])
+
+            return playlist_data, tracks, extra_kwargs, total_tracks
+
+        if not self.is_authenticated():
+            with self._with_guest_credentials():
+                playlist_data, tracks, extra_kwargs, total_tracks = _build()
+        else:
+            playlist_data, tracks, extra_kwargs, total_tracks = _build()
 
         return PlaylistInfo(
             name = playlist_data['name'],
