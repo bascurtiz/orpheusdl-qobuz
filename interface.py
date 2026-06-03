@@ -5,6 +5,7 @@ import logging
 import socket
 import threading
 import webbrowser
+from contextlib import contextmanager
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -150,6 +151,91 @@ class ModuleInterface:
         else:
             # GUI only - allow guest mode for now
             pass
+
+    GUEST_APP_ID = '712109809'
+    GUEST_APP_SECRET = '589be88e4538daea11f509d29e4a23b1'
+
+    @staticmethod
+    def _is_auth_api_error(exc: Exception) -> bool:
+        err = str(exc).lower()
+        return (
+            '"code":401' in str(exc)
+            or '"code":400' in str(exc)
+            or 'authentication' in err
+            or 'invalid app_id' in err
+        )
+
+    @contextmanager
+    def _with_guest_credentials(self):
+        """Use web-player guest app id/secret (same as guest search) for metadata API calls."""
+        orig_token = self.session.auth_token
+        orig_app_id = self.session.app_id
+        orig_app_secret = self.session.app_secret
+        self.session.auth_token = None
+        self.session.app_id = self.GUEST_APP_ID
+        self.session.app_secret = self.GUEST_APP_SECRET
+        try:
+            yield
+        finally:
+            self.session.auth_token = orig_token
+            self.session.app_id = orig_app_id
+            self.session.app_secret = orig_app_secret
+
+    def _pick_artist_search_match(self, items: list, artist_name: str):
+        if not items:
+            return None
+        name_l = (artist_name or '').lower().strip()
+        if name_l:
+            for item in items:
+                if (item.get('name') or '').lower().strip() == name_l:
+                    return item
+            for item in items:
+                if name_l in (item.get('name') or '').lower():
+                    return item
+        return items[0]
+
+    def _get_artist_via_catalog_search(self, artist_name: str):
+        if not (artist_name or '').strip():
+            raise self.module_controller.module_error('Qobuz: artist name required for guest lookup')
+        results = self.session.search('artist', artist_name.strip(), 10)
+        items = (results.get('artists') or {}).get('items') or []
+        match = self._pick_artist_search_match(items, artist_name)
+        if not match:
+            raise self.module_controller.module_error(f"Qobuz: no artist found for '{artist_name}'")
+        return self.session.get_artist(str(match['id']))
+
+    def _fetch_artist_page(self, artist_id: str, artist_name: str = None, force_name_lookup: bool = False):
+        """Load artist/get; guests use web-player credentials; proxy IDs resolve by name."""
+        if force_name_lookup or not str(artist_id or '').strip():
+            if not (artist_name or '').strip():
+                raise self.module_controller.module_error('Qobuz: cannot resolve artist without a name')
+            with self._with_guest_credentials():
+                return self._get_artist_via_catalog_search(artist_name)
+
+        def _get():
+            return self.session.get_artist(str(artist_id))
+
+        if self.is_authenticated():
+            try:
+                return _get()
+            except Exception as e:
+                if not self._is_auth_api_error(e):
+                    raise
+                logging.debug('Qobuz: artist/get failed with session credentials, retrying as guest')
+                with self._with_guest_credentials():
+                    try:
+                        return _get()
+                    except Exception:
+                        if artist_name:
+                            return self._get_artist_via_catalog_search(artist_name)
+                        raise
+        with self._with_guest_credentials():
+            try:
+                return _get()
+            except Exception:
+                if artist_name:
+                    return self._get_artist_via_catalog_search(artist_name)
+                raise
 
     def _start_oauth_flow(self, status_callback=None):
         """
@@ -484,10 +570,51 @@ class ModuleInterface:
             url = stream_data.get('url')
         return TrackDownloadInfo(download_type=DownloadEnum.URL, file_url=url)
 
-    def get_album_info(self, album_id):
-        self._ensure_credentials()
-        album_data = self.session.get_album(album_id)
+    def _fetch_album_page(self, album_id: str):
+        def _get():
+            return self.session.get_album(str(album_id))
 
+        if self.is_authenticated():
+            try:
+                return _get()
+            except Exception as e:
+                if not self._is_auth_api_error(e):
+                    raise
+                logging.debug('Qobuz: album/get failed with session credentials, retrying as guest')
+                with self._with_guest_credentials():
+                    return _get()
+        with self._with_guest_credentials():
+            return _get()
+
+    def _fetch_playlist_page(self, playlist_id: str, limit: int = 500, offset: int = 0):
+        def _get():
+            return self.session.get_playlist(str(playlist_id), limit=limit, offset=offset)
+
+        if self.is_authenticated():
+            try:
+                return _get()
+            except Exception as e:
+                if not self._is_auth_api_error(e):
+                    raise
+                logging.debug('Qobuz: playlist/get failed with session credentials, retrying as guest')
+                with self._with_guest_credentials():
+                    return _get()
+        with self._with_guest_credentials():
+            return _get()
+
+    def get_album_info(self, album_id, **kwargs):
+        if self.is_authenticated():
+            self._ensure_credentials()
+
+        def _build():
+            return self._album_info_from_page(self._fetch_album_page(album_id))
+
+        if not self.is_authenticated():
+            with self._with_guest_credentials():
+                return _build()
+        return _build()
+
+    def _album_info_from_page(self, album_data: dict) -> AlbumInfo:
         booklet_url = None
         if album_data.get('goodies'):
             try:
@@ -504,11 +631,10 @@ class ModuleInterface:
             extra_kwargs[track_id] = track
 
         # get the wanted quality for an actual album quality_format string
-        quality_tier = self.quality_parse[self.quality_tier]
-        # TODO: Ignore sample_rate and bit_depth if album_data['hires'] is False?
-        bit_depth = 24 if quality_tier == 27 and album_data['hires_streamable'] else 16
-        sample_rate = album_data['maximum_sampling_rate'] if quality_tier == 27 and album_data[
-            'hires_streamable'] else 44.1
+        quality_tier = self.quality_parse.get(self.quality_tier, 6)
+        hires_streamable = album_data.get('hires_streamable', False)
+        bit_depth = 24 if quality_tier == 27 and hires_streamable else 16
+        sample_rate = album_data['maximum_sampling_rate'] if quality_tier == 27 and hires_streamable else 44.1
 
         quality_tags = {
             'sample_rate': sample_rate,
@@ -552,43 +678,42 @@ class ModuleInterface:
             expected_track_count=int(tracks_count) if tracks_count is not None else None,
         )
 
-    def get_playlist_info(self, playlist_id):
-        self._ensure_credentials()
-        # Fetch first batch to get total track count
-        playlist_data = self.session.get_playlist(playlist_id)
+    def get_playlist_info(self, playlist_id, **kwargs):
+        if self.is_authenticated():
+            self._ensure_credentials()
 
-        
-        tracks, extra_kwargs = [], {}
-        
-        # Process first batch of tracks
-        for track in playlist_data['tracks']['items']:
-            track_id = str(track['id'])
-            extra_kwargs[track_id] = track
-            tracks.append(track_id)
-        
-        # Check if there are more tracks to fetch (pagination)
-        total_tracks = playlist_data['tracks'].get('total', len(playlist_data['tracks']['items']))
-        fetched_tracks = len(playlist_data['tracks']['items'])
-        
-        # Fetch remaining tracks if playlist has more than initial batch
-        if fetched_tracks < total_tracks:
-            offset = fetched_tracks
-            limit = 500  # Qobuz API limit per request
-            
-            while offset < total_tracks:
-                # Fetch next batch
-                batch_data = self.session.get_playlist(playlist_id, limit=limit, offset=offset)
-                
-                if not batch_data['tracks']['items']:
-                    break  # No more tracks to fetch
-                
-                # Process batch tracks
-                for track in batch_data['tracks']['items']:
-                    track_id = str(track['id'])
-                    extra_kwargs[track_id] = track
-                    tracks.append(track_id)
-                
-                offset += len(batch_data['tracks']['items'])
+        def _build():
+            playlist_data = self._fetch_playlist_page(playlist_id)
+            tracks, extra_kwargs = [], {}
+
+            for track in playlist_data['tracks']['items']:
+                track_id = str(track['id'])
+                extra_kwargs[track_id] = track
+                tracks.append(track_id)
+
+            total_tracks = playlist_data['tracks'].get('total', len(playlist_data['tracks']['items']))
+            fetched_tracks = len(playlist_data['tracks']['items'])
+
+            if fetched_tracks < total_tracks:
+                offset = fetched_tracks
+                limit = 500
+                while offset < total_tracks:
+                    batch_data = self._fetch_playlist_page(playlist_id, limit=limit, offset=offset)
+                    if not batch_data['tracks']['items']:
+                        break
+                    for track in batch_data['tracks']['items']:
+                        track_id = str(track['id'])
+                        extra_kwargs[track_id] = track
+                        tracks.append(track_id)
+                    offset += len(batch_data['tracks']['items'])
+
+            return playlist_data, tracks, extra_kwargs, total_tracks
+
+        if not self.is_authenticated():
+            with self._with_guest_credentials():
+                playlist_data, tracks, extra_kwargs, total_tracks = _build()
+        else:
+            playlist_data, tracks, extra_kwargs, total_tracks = _build()
 
         return PlaylistInfo(
             name = playlist_data['name'],
@@ -602,12 +727,30 @@ class ModuleInterface:
             track_extra_kwargs = {'data': extra_kwargs}
         )
 
-    def get_artist_info(self, artist_id, get_credited_albums):
-        self._ensure_credentials()
-        artist_data = self.session.get_artist(artist_id)
+    def get_artist_info(self, artist_id, get_credited_albums, artist_name=None, **kwargs):
+        # Downloads still require login; browsing/expanding works for guests via guest app credentials.
+        if self.is_authenticated():
+            self._ensure_credentials()
+        proxy_platform = kwargs.get('proxy_platform')
+        force_name_lookup = proxy_platform == 'applemusic'
+        use_guest_session = (not self.is_authenticated()) or force_name_lookup
 
+        def _build():
+            artist_data = self._fetch_artist_page(
+                artist_id,
+                artist_name=artist_name,
+                force_name_lookup=force_name_lookup,
+            )
+            return self._artist_info_from_page(artist_data)
+
+        if use_guest_session:
+            with self._with_guest_credentials():
+                return _build()
+        return _build()
+
+    def _artist_info_from_page(self, artist_data: dict) -> ArtistInfo:
         albums_raw = (artist_data.get('albums') or {}).get('items') or []
-        
+
         # Batch fetch missing album metadata (tracks_count and duration)
         missing_metadata = [idx for idx, a in enumerate(albums_raw) if isinstance(a, dict) and (not a.get('tracks_count') or not a.get('duration'))]
         if missing_metadata:
@@ -622,7 +765,7 @@ class ModuleInterface:
                 fetch_ids = [albums_raw[idx]['id'] for idx in missing_metadata]
                 for aid, full_data in executor.map(_fetch_qobuz_album_meta, fetch_ids):
                     if full_data: a_meta[str(aid)] = full_data
-            
+
             for idx in missing_metadata:
                 aid = str(albums_raw[idx]['id'])
                 if aid in a_meta:
