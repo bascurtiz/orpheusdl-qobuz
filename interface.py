@@ -4,7 +4,6 @@ import re
 import logging
 import socket
 import threading
-import webbrowser
 from contextlib import contextmanager
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -12,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import concurrent.futures
 
 from utils.models import *
+from utils.utils import open_url_in_browser
 from .qobuz_api import Qobuz
 
 
@@ -293,7 +293,7 @@ class ModuleInterface:
             completion_event = threading.Event()
 
             _log(f"Waiting for browser login... (Link: {oauth_url})")
-            webbrowser.open(oauth_url)
+            open_url_in_browser(oauth_url)
 
             # Start server in a thread to capture the code
             def _run_server():
