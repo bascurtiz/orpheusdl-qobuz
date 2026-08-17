@@ -108,9 +108,11 @@ loaded module. You'll find the configuration file here: `config/settings.json`
     "password": ""
 }
 ```
-`app_id`: Enter a valid mobile app id
+`app_id` / `app_secret`: Qobuz tokens are bound to the app_id they were created with, so the pair must match your token's creation date:
 
-`app_secret`: Enter a valid mobile app secret
+* Created after 2025-05-06: `app_id` `798273057`, `app_secret` `abb21364945c0583309667d13ca3d93a`
+* Created after 2024-08-12: `app_id` `579939560`, `app_secret` `fa31fc13e7a28e7d70bb61e91aa9e178`
+* Created before 2024-08-12: `app_id` `950096963`, `app_secret` `979549437fcc4a3faad4867b5cd25dcb`
 
 `quality_format`: How the quality is formatted when `{quality}` is present in `album_format`, possible values are 
 `{sample_rate}` and `bit_depth`.

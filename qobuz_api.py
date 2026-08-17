@@ -184,8 +184,16 @@ class Qobuz:
         """Web player signature pattern: {object}{method}{sorted_params}{timestamp}{secret}"""
         unix = str(int(time.time()))
         
-        # Determine which secret to use
-        secret = self.guest_app_secret if not self.auth_token else "abb21364945c0583309667d13ca3d93a"
+        # Determine which secret to use.
+        # Qobuz tokens are bound to the app_id they were created with, so the signing
+        # secret MUST match the configured app_secret for the request to authenticate.
+        # Guest/preview requests always use the guest secret.
+        #
+        # Valid app_id / app_secret pairs (choose based on token creation date):
+        #   created after  2025-05-06: 798273057 / abb21364945c0583309667d13ca3d93a
+        #   created after  2024-08-12: 579939560 / fa31fc13e7a28e7d70bb61e91aa9e178
+        #   created before 2024-08-12: 950096963 / 979549437fcc4a3faad4867b5cd25dcb
+        secret = self.guest_app_secret if not self.auth_token else (self.app_secret or "abb21364945c0583309667d13ca3d93a")
         
         # Pattern for signature: alphabetically sorted key-values, then timestamp, then secret
         sig_base = epoint.replace('/', '')
