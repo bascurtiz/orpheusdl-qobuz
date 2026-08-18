@@ -56,7 +56,7 @@ module_information = ModuleInformation(
     login_behaviour = ManualEnum.manual,
     global_settings = {'app_id': '798273057', 'app_secret': 'abb21364945c0583309667d13ca3d93a', 'quality_format': '{sample_rate}kHz/{bit_depth}bit'},
     session_settings = {'username': '', 'password': '', 'user_id': '', 'auth_token': '', 'use_id_token': 'false'},
-    session_storage_variables = ['token', 'user_id'],
+    session_storage_variables = ['token', 'user_id', 'app_id', 'app_secret'],
     netlocation_constant = 'qobuz',
     url_constants={
         'track': DownloadTypeEnum.track,
@@ -68,6 +68,23 @@ module_information = ModuleInformation(
     },
     test_url = 'https://open.qobuz.com/track/52151405'
 )
+
+
+# Qobuz tokens are bound to the app_id they were created with, so the signing
+# secret must match the app_id. The OAuth flow creates tokens against the
+# current web-player production app_id (scraped from the bundle), so that app_id
+# must be paired with its correct secret — not whatever older preset the user
+# may still have in settings.json.
+QOBUZ_APP_SECRETS = {
+    '798273057': 'abb21364945c0583309667d13ca3d93a',   # tokens created after 2025-05-06
+    '579939560': 'fa31fc13e7a28e7d70bb61e91aa9e178',   # tokens created after 2024-08-12
+    '950096963': '979549437fcc4a3faad4867b5cd25dcb',   # tokens created before 2024-08-12
+}
+
+# The OAuth flow always mints tokens against this (the current web-player
+# production app_id), so it is the binding used to backfill pre-persistence
+# OAuth tokens that only stored token + user_id.
+QOBUZ_CURRENT_APP_ID = '798273057'
 
 
 class ModuleInterface:
@@ -82,6 +99,31 @@ class ModuleInterface:
         user_id = storage.read('user_id') or settings.get('user_id')
         
         self.session.auth_token = auth_token
+
+        # The OAuth flow stores the app_id the token is bound to alongside the
+        # token itself. settings.json can still hold an older preset (e.g. the
+        # pre-2024 pair), so restore the stored binding here — otherwise the
+        # valid token is signed with the wrong app_id/secret and Qobuz returns
+        # 401 "User authentication is required" until the user re-logs in.
+        stored_app_id = storage.read('app_id')
+        stored_app_secret = storage.read('app_secret')
+        # Migration for OAuth tokens created before the app_id binding was
+        # persisted: OAuth stores user_id but email/password login does not, so
+        # a token with a stored user_id and no stored app_id is an OAuth token
+        # bound to the current production app_id. Backfill the binding so it is
+        # not paired with a stale settings.json preset.
+        if not stored_app_id and storage.read('user_id') and storage.read('token'):
+            stored_app_id = QOBUZ_CURRENT_APP_ID
+            stored_app_secret = QOBUZ_APP_SECRETS.get(QOBUZ_CURRENT_APP_ID, stored_app_secret)
+            storage.set('app_id', stored_app_id)
+            storage.set('app_secret', stored_app_secret)
+        if stored_app_id:
+            self.session.app_id = stored_app_id
+            settings['app_id'] = stored_app_id
+        if stored_app_secret:
+            self.session.app_secret = stored_app_secret
+            settings['app_secret'] = stored_app_secret
+
         # Ensure user_id is in module_settings for GUI visibility
         if not settings.get('user_id') and user_id:
             settings['user_id'] = user_id
@@ -356,6 +398,32 @@ class ModuleInterface:
             usr_info = self.session.login_with_oauth_code(code)
             auth_token = usr_info.get('user_auth_token') or self.session.auth_token
             user_id = str(usr_info.get('user', {}).get('id', ''))
+
+            # The oauth/callback token set by session.login_with_oauth_code() is
+            # only an intermediate value; the partner user/login call returns the
+            # final, activated user_auth_token that must be used for subsequent
+            # signed requests. Point the live session at that final token too,
+            # otherwise the first download after a fresh login still sends the
+            # intermediate token and Qobuz returns 401
+            # "User authentication is required" until the app is restarted and
+            # the persisted token is loaded.
+            self.session.auth_token = auth_token
+
+            # The OAuth exchange happens against the app_id scraped from Qobuz's
+            # web player (the ext_app_id in the signin URL), so the resulting
+            # token is bound to *that* app_id. Signing with a different
+            # configured pair — e.g. an older preset still in settings.json —
+            # makes Qobuz reject the token with 401 "User authentication is
+            # required". Keep the scraped app_id and pair it with its matching
+            # secret, then persist both so a restart uses the same pair.
+            settings = self.module_controller.module_settings
+            scraped_app_id = self.session.app_id
+            matching_secret = QOBUZ_APP_SECRETS.get(scraped_app_id)
+            self.session.app_id = scraped_app_id
+            if matching_secret:
+                self.session.app_secret = matching_secret
+            settings['app_id'] = scraped_app_id
+            settings['app_secret'] = self.session.app_secret
             
             # Persist to persistent settings so it survives restarts
             self.module_controller.module_settings['auth_token'] = auth_token
@@ -365,9 +433,13 @@ class ModuleInterface:
             self.module_controller.module_settings['username'] = ''
             self.module_controller.module_settings['password'] = ''
             
-            # Save to temporary session storage (loginstorage.bin)
+            # Save to temporary session storage (loginstorage.bin). Also store
+            # the app_id/app_secret binding so a restart signs this token with
+            # the correct pair even if settings.json still has an older preset.
             self.module_controller.temporary_settings_controller.set('token', auth_token)
             self.module_controller.temporary_settings_controller.set('user_id', user_id)
+            self.module_controller.temporary_settings_controller.set('app_id', scraped_app_id)
+            self.module_controller.temporary_settings_controller.set('app_secret', self.session.app_secret)
             
             return True
         except Exception as e:
