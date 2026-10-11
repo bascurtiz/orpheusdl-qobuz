@@ -518,11 +518,24 @@ class ModuleInterface:
             track_data['performers'] = ' - '.join(performers)
         artists[0] = main_artist['name']
 
-        # Extract the primary album artist name.
+        # Keep album artist metadata as strings; the tagger calls .lower() on these values.
         album_artist = album_data.get('artist', {}).get('name', '') if isinstance(album_data.get('artist'), dict) else ''
+        album_artist_list = []
+        for artist in (track_data.get('album', {}).get('artists') or []):
+            name = artist.get('name', '') if isinstance(artist, dict) else artist
+            if isinstance(name, str) and name.strip() and name.strip() not in album_artist_list:
+                album_artist_list.append(name.strip())
+        # for album_artist in track_data['album']['artists']:
+        #     if 'main-artist' in album_artist['roles']:
+        #         album_artist_list.append(album_artist['name'].strip())
+
+        # for album_artist in track_data['album']['artists']:
+        #     if 'featured-artist' in album_artist['roles']:
+        #         album_artist_list.append(album_artist['name'].strip())
 
         tags = Tags(
             album_artist = album_artist,
+            album_artists = album_artist_list,
             composer = track_data.get('composer', {}).get('name') if isinstance(track_data.get('composer'), dict) else None,
             release_date = album_data.get('release_date_original'),
             track_number = track_data.get('track_number'),
